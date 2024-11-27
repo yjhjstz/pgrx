@@ -426,6 +426,7 @@ pub fn interrupt_pending() -> bool {
 
 /// If an interrupt is pending (perhaps a user-initiated "cancel query" message to this backend),
 /// this will safely abort the current transaction
+#[cfg(not(feature = "cbdb"))]
 #[macro_export]
 macro_rules! check_for_interrupts {
     () => {
@@ -433,6 +434,22 @@ macro_rules! check_for_interrupts {
         unsafe {
             if $crate::InterruptPending != 0 {
                 $crate::ProcessInterrupts();
+            }
+        }
+    };
+}
+
+#[cfg(feature = "cbdb")]
+#[macro_export]
+macro_rules! check_for_interrupts {
+    () => {
+        #[allow(unused_unsafe)]
+        unsafe {
+            if $crate::InterruptPending != 0 {
+                $crate::ProcessInterrupts(
+                    crate::memcxt::PgMemoryContexts::CurrentMemoryContext.pstrdup(file!()),
+                    line!() as i32,
+                );
             }
         }
     };

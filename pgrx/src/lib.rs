@@ -228,6 +228,7 @@ macro_rules! pg_module_magic {
 /// [Benjamin Fry]: https://github.com/bluejekyll/pg-extend-rs
 /// [Daniel Fagnan]: https://github.com/thehydroimpulse/postgres-extension.rs
 /// [Dynamic Loading]: https://www.postgresql.org/docs/current/xfunc-c.html#XFUNC-C-DYNLOAD
+#[cfg(not(feature = "cbdb"))]
 #[macro_export]
 macro_rules! pg_magic_func {
     ($($key:ident $(= $value: expr)?),*) => {
@@ -356,6 +357,34 @@ macro_rules! pg_magic_func {
 
             // return the magic
             &MY_MAGIC.0
+        }
+    };
+}
+
+#[cfg(feature = "cbdb")]
+#[macro_export]
+macro_rules! pg_magic_func {
+    () => {
+        #[no_mangle]
+        #[allow(non_snake_case, unexpected_cfgs)]
+        #[doc(hidden)]
+        pub extern "C" fn Pg_magic_func() -> &'static ::pgrx::pg_sys::Pg_magic_struct {
+            static MY_MAGIC: ::pgrx::pg_sys::Pg_magic_struct = ::pgrx::pg_sys::Pg_magic_struct {
+                len: ::core::mem::size_of::<::pgrx::pg_sys::Pg_magic_struct>() as i32,
+                version: ::pgrx::pg_sys::GP_VERSION_NUM as i32 / 100,
+                funcmaxargs: ::pgrx::pg_sys::FUNC_MAX_ARGS as i32,
+                indexmaxkeys: ::pgrx::pg_sys::INDEX_MAX_KEYS as i32,
+                namedatalen: ::pgrx::pg_sys::NAMEDATALEN as i32,
+                float8byval: cfg!(target_pointer_width = "64") as i32,
+                product: ::pgrx::pg_sys::Pg_magic_product_code_PgMagicProductCloudberry as i32,
+            };
+
+            // since Postgres calls this first, register our panic handler now
+            // so we don't unwind into C / Postgres
+            ::pgrx::pg_sys::panic::register_pg_guard_panic_hook();
+
+            // return the magic
+            &MY_MAGIC
         }
     };
 }

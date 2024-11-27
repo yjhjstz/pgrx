@@ -473,6 +473,8 @@ pub struct BackgroundWorkerBuilder {
     bgw_main_arg: pg_sys::Datum,
     bgw_extra: String,
     bgw_notify_pid: pg_sys::pid_t,
+    #[cfg(feature = "cbdb")]
+    bgw_start_rule: pg_sys::bgworker_start_rule,
     shared_memory_startup_fn: Option<unsafe extern "C-unwind" fn()>,
 }
 
@@ -495,6 +497,8 @@ impl BackgroundWorkerBuilder {
             bgw_main_arg: pg_sys::Datum::from(0),
             bgw_extra: "".to_string(),
             bgw_notify_pid: 0,
+            #[cfg(feature = "cbdb")]
+            bgw_start_rule: None,
             shared_memory_startup_fn: None,
         }
     }
@@ -625,6 +629,12 @@ impl BackgroundWorkerBuilder {
         self
     }
 
+    #[cfg(feature = "cbdb")]
+    pub fn set_start_rule(mut self, input: pg_sys::bgworker_start_rule) -> Self {
+        self.bgw_start_rule = input;
+        self
+    }
+
     /// Once properly configured, call `load()` to get the BackgroundWorker registered and
     /// started at the proper time by Postgres.
     pub fn load(self) {
@@ -687,6 +697,8 @@ impl<'a> From<&'a BackgroundWorkerBuilder> for pg_sys::BackgroundWorker {
             bgw_main_arg: builder.bgw_main_arg,
             bgw_extra: RpgffiChar128::from(&builder.bgw_extra[..]).0,
             bgw_notify_pid: builder.bgw_notify_pid,
+            #[cfg(feature = "cbdb")]
+            bgw_start_rule: builder.bgw_start_rule,
         }
     }
 }

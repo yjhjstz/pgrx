@@ -186,7 +186,15 @@ impl Drop for OwnedMemoryContext {
             if ptr::eq(pg_sys::CurrentMemoryContext, self.owned) {
                 pg_sys::CurrentMemoryContext = self.previous;
             }
+            #[cfg(not(feature = "cbdb"))]
             pg_sys::MemoryContextDelete(self.owned);
+            #[cfg(feature = "cbdb")]
+            pg_sys::MemoryContextDeleteImpl(
+                self.owned,
+                PgMemoryContexts::CurrentMemoryContext.pstrdup(file!()),
+                std::ptr::null(), // field `func` is not used in Cloudberry
+                line!() as i32,
+            );
         }
     }
 }
@@ -394,7 +402,15 @@ impl PgMemoryContexts {
                 let result = PgMemoryContexts::exec_in_context(context, f);
 
                 unsafe {
+                    #[cfg(not(feature = "cbdb"))]
                     pg_sys::MemoryContextDelete(context);
+                    #[cfg(feature = "cbdb")]
+                    pg_sys::MemoryContextDeleteImpl(
+                        context,
+                        PgMemoryContexts::CurrentMemoryContext.pstrdup(file!()),
+                        std::ptr::null(), // field `func` is not used in Cloudberry
+                        line!() as i32,
+                    );
                 }
 
                 result
