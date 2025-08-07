@@ -7,7 +7,7 @@
 //LICENSE All rights reserved.
 //LICENSE
 //LICENSE Use of this source code is governed by the MIT license that can be found in the LICENSE file.
-use cargo_edit::{registry_url, update_registry_index, Dependency, LocalManifest};
+use cargo_edit::{registry_url, CertsSource, Dependency, IndexCache, LocalManifest};
 use eyre::eyre;
 use std::path::{Path, PathBuf};
 use toml_edit::KeyMut;
@@ -110,6 +110,7 @@ impl Upgrade {
         mut key: KeyMut,
         dep: &mut toml_edit::Item,
     ) -> eyre::Result<()> {
+        let mut index = IndexCache::new(CertsSource::Native);
         let dep_name_string = key.get().to_string();
         let dep_name = dep_name_string.as_str();
         let parsed_dep: Dependency = match Dependency::from_toml(path.as_path(), dep_name, dep) {
@@ -123,25 +124,23 @@ impl Upgrade {
         };
         let reg_url = registry_url(path, parsed_dep.registry())
             .map_err(|e| eyre!("Unable to fetch registry URL for path: {e}"))?;
-        update_registry_index(&reg_url, false)
-            .map_err(|e| eyre!("Unable to update registry index: {e}"))?;
+        let index =
+            index.index(&reg_url).map_err(|e| eyre!("Unable to get registry index: {e}"))?;
         let target_version = match self.to {
             Some(ref ver) => Some(ver.clone()),
-            None => cargo_edit::get_latest_dependency(
-                dep_name,
-                self.include_prereleases,
-                None,
-                path,
-                Some(&reg_url),
-            )
-            .map_err(|e| {
-                eyre!(
-                    "Unable to fetch the latest version \
-                        for crate {dep_name} due to {e}"
-                )
-            })?
-            .version()
-            .map(|s| s.to_string()),
+            None => {
+                let krate = index.krate(dep_name).map_err(|e| {
+                    eyre!("The crate `{dep_name}` could not be found in registry index due {e}.")
+                })?;
+                let versions = krate.as_ref().map(|k| k.versions.as_slice()).unwrap_or_default();
+                let dependency =
+                    cargo_edit::find_latest_version(versions, self.include_prereleases, None)
+                        .ok_or_else(|| {
+                            eyre!("Unable to fetch the latest version for crate {dep_name}.")
+                        })?;
+
+                dependency.version().map(|s| s.to_string())
+            }
         };
         let target_version = match target_version {
             Some(ver) => ver,
@@ -207,6 +206,8 @@ impl Upgrade {
         }
         Ok(())
     }
+
+    #[allow(deprecated)] // the API changes to toml_edit are quite complex!
     fn process_manifest(&self, path: &PathBuf, manifest: &mut LocalManifest) -> eyre::Result<()> {
         const RELEVANT_PACKAGES: [&str; 6] = [
             "pgrx",
@@ -223,14 +224,14 @@ impl Upgrade {
                 if let Some((key, dep)) = dep_table.get_key_value_mut(dep_name) {
                     self.update_dep(path, key, dep)?;
                     // Workaround since update_toml() doesn't preserve comments
-                    dep_table.key_decor_mut(dep_name).map(|dec| {
+                    if let Some(dec) = dep_table.key_decor_mut(dep_name) {
                         if let Some(prefix) = decor.as_ref().and_then(|val| val.prefix().cloned()) {
                             dec.set_prefix(prefix)
                         }
                         if let Some(suffix) = decor.as_ref().and_then(|val| val.suffix().cloned()) {
                             dec.set_suffix(suffix)
                         }
-                    });
+                    }
                 } else {
                     debug!(
                         "Manifest does not contain a dependency entry for \

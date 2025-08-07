@@ -52,11 +52,7 @@ impl FromDatum for Uuid {
         } else {
             let bytes =
                 std::slice::from_raw_parts(datum.cast_mut_ptr::<u8>() as *const u8, UUID_BYTES_LEN);
-            if let Ok(uuid) = Uuid::from_slice(bytes) {
-                Some(uuid)
-            } else {
-                None
-            }
+            Uuid::from_slice(bytes).ok()
         }
     }
 }
@@ -122,13 +118,13 @@ impl std::fmt::Display for Uuid {
     }
 }
 
-impl<'a> std::fmt::LowerHex for Uuid {
+impl std::fmt::LowerHex for Uuid {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         self.format(f, UuidFormatCase::Lowercase)
     }
 }
 
-impl<'a> std::fmt::UpperHex for Uuid {
+impl std::fmt::UpperHex for Uuid {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         self.format(f, UuidFormatCase::Uppercase)
     }

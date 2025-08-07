@@ -13,11 +13,11 @@
 
 `pgrx` is a framework for developing PostgreSQL extensions in Rust and strives to be as idiomatic and safe as possible.
 
-`pgrx` supports Postgres 12 through Postgres 17.
+`pgrx` supports Postgres 13 through Postgres 18.
 
 ## Want to chat with us or get a question answered?
 
-   + **Please join our [Discord Server](https://discord.gg/PMrpdJsqcJ).**
+   + **Please join our [Discord Server][Discord].**
 
    + **We are also in need of financial [sponsorship](https://checkout.square.site/merchant/MLHG5M9GAXQPV/checkout/2OW2SULDQBSZ2JLHSLRZQLZH).**
 
@@ -31,7 +31,7 @@
    + `cargo pgrx package`: Create installation packages for your extension
    + More in the [`README.md`](cargo-pgrx/README.md)!
 - **Target Multiple Postgres Versions**
-   + Support from Postgres 12 to Postgres 17 from the same codebase
+   + Support from Postgres 13 to Postgres 17 from the same codebase
    + Use Rust feature gating to use version-specific APIs
    + Seamlessly test against all versions
 - **Automatic Schema Generation**
@@ -53,6 +53,7 @@
 - **Easy Custom Types**
    + `#[derive(PostgresType)]` to use a Rust struct as a Postgres type
       - By default, represented as a CBOR-encoded object in-memory/on-disk, and JSON as human-readable
+      - Supports `#[pg_binary_protocol]` to generate binary protocol send/recv functions
       - Provide custom in-memory/on-disk/human-readable representations
    + `#[derive(PostgresEnum)]` to use a Rust enum as a Postgres enum
    + Composite types supported with the `pgrx::composite_type!("Sample")` macro
@@ -63,50 +64,52 @@
    + Safe access to Postgres' `MemoryContext` system via `pgrx::PgMemoryContexts`
    + Executor/planner/transaction/subtransaction hooks
    + Safely use Postgres-provided pointers with `pgrx::PgBox<T>` (akin to `alloc::boxed::Box<T>`)
-   + `#[pg_guard]` proc-macro for guarding `extern "C"` Rust functions that need to be passed into Postgres
+   + `#[pg_guard]` proc-macro for guarding `extern "C-unwind"` Rust functions that need to be passed into Postgres
    + Access Postgres' logging system through `eprintln!`-like macros
    + Direct `unsafe` access to large parts of Postgres internals via the `pgrx::pg_sys` module
    + New features added regularly!
 
 ## System Requirements
 
-PGRX has been tested to work on x86_64⹋ and aarch64⹋ Linux and aarch64 macOS targets.
-It is currently expected to work on other "Unix" OS with possible small changes, but
-those remain untested. So far, some of PGRX's build tooling works on Windows, but not all.
+PGRX has been tested to work on x86_64⹋ and aarch64⹋ Linux and aarch64 macOS and x86_64⹋ Windows targets.
+It is currently expected to work on other "Unix" OS with possible small changes, but those remain untested.
 
 - A Rust toolchain: `rustc`, `cargo`, and `rustfmt`. The recommended way to get these is from https://rustup.rs †
 - `git`
 - `libclang` 11 or greater (for bindgen)
    - Debian-likes: `apt install libclang-dev` or `apt install clang`
    - RHEL-likes: `yum install clang`
-- GCC 7 or newer
+   - Windows: download installers from https://github.com/llvm/llvm-project/releases
+- C compiler
+   - Linux and MacOS: GCC or Clang if `cshim` feature is enabled, and no need if the `cshim` feature is disabled
+   - Windows: MSVC or Clang
 - [PostgreSQL's build dependencies](https://wiki.postgresql.org/wiki/Compile_and_Install_from_source_code) ‡
    - Debian-likes: `sudo apt-get install build-essential libreadline-dev zlib1g-dev flex bison libxml2-dev libxslt-dev libssl-dev libxml2-utils xsltproc ccache pkg-config`
    - RHEL-likes: `sudo yum install -y bison-devel readline-devel zlib-devel openssl-devel wget ccache && sudo yum groupinstall -y 'Development Tools'`
 
  † PGRX has no MSRV policy, thus may require the latest stable version of Rust, available via Rustup
 
- ‡ A local PostgreSQL server installation is not required. `cargo pgrx` can download and compile PostgreSQL versions on its own.
+ ‡ A local PostgreSQL server installation is not required. On Linux and MacOS, `cargo pgrx` can download and compile PostgreSQL versions on its own. On Windows, `cargo pgrx` downloads precompiled PostgreSQL versions from EnterpriseDB.
 
  ⹋ PGRX has not been tested to work on 32-bit, but the library attempts to handle conversion of `pg_sys::Datum`
-to and from `int8` and `double` types. Use it only for your own risk. We do not plan to add offical support
+to and from `int8` and `double` types. Use it only for your own risk. We do not plan to add official support
 without considerable ongoing technical and financial contributions.
 
 ### macOS
 
 Running PGRX on a Mac requires some additional setup.
 
-The Mac C compiler (clang) and related tools are bundled with [XCode](https://developer.apple.com/xcode/). 
+The Mac C compiler (clang) and related tools are bundled with [XCode](https://developer.apple.com/xcode/).
 XCode can be installed from the Mac App Store.
 
-For additional C libraries, it's easiest to use [Homebrew](https://brew.sh/). In particular, 
+For additional C libraries, it's easiest to use [Homebrew](https://brew.sh/). In particular,
 you will probably need these if you don't have them already:
 
 ```zsh
 brew install git icu4c pkg-config
 ```
-The config script that Postgres 17 uses in its build process does not automatically detect 
-the Homebrew install directory. (Earlier versions of Postgres do not have this problem.) 
+The config script that Postgres 17 uses in its build process does not automatically detect
+the Homebrew install directory. (Earlier versions of Postgres do not have this problem.)
 You may see this error:
 
 ```configure: error: ICU library not found```
@@ -122,6 +125,12 @@ the C compiler. When the Postgres ./config process runs during the build, it gra
 and stores it, which means that there will be build errors if you do a full rebuild of your
 project and the old directory has disappeared. The solution is re-run `cargo pgrx init` so the
 Postgres installs get rebuilt.
+
+### Windows
+
+Running PGRX on Windows requires MSVC prerequisites.
+
+On Windows, please follow https://rust-lang.github.io/rustup/installation/windows-msvc.html to set up it.
 
 ## Getting Started
 
@@ -154,7 +163,7 @@ cd my_extension
 This will create a new directory for the extension crate.
 
 ```
-$ tree 
+$ tree
 .
 ├── Cargo.toml
 ├── my_extension.control
@@ -187,6 +196,26 @@ my_extension=# SELECT hello_my_extension();
 ```
 
 For more details on how to manage pgrx extensions see [Managing pgrx extensions](cargo-pgrx/README.md).
+
+## Cross-compiling
+
+So far, cross-compiling extensions with pgrx has only been demonstrated under [nix](https://nixos.org/).
+Proper support in nixpkgs is still in flux, so watch this space.
+
+In order to cross-compile outside of nix, you will need two ingredients:
+
+1) A sysroot for the cross architecture, with rust configured to invoke the linker with flags to link against this sysroot.
+2) A `pg_config` program that provides values associated with postgres compiled for the desired cross architecture.
+   This can be achieved by either emulating pg_config with qemu-user or similar, or replicating pg_config with a shell script.
+
+Then, modify the standard build process in the following ways:
+
+1) Pass `--no-run` to `cargo pgrx init`, since we cannot run postgres for the cross machine.
+2) Pass one of the `--pgXX` flags to `cargo pgrx init` with the aforementioned `pg_config`.
+3) Pass the `--pg-config` flag to `cargo pgrx package` with the aforementioned `pg_config`.
+4) Pass the `--target` flag to `cargo pgrx package` with the rust triple of the cross machine.
+
+`cargo pgrx run` will not not work.
 
 ## Upgrading
 
@@ -272,7 +301,6 @@ There's probably more than are listed here, but a primary things of note are:
  - How to correctly interact with Postgres in an `async` context remains unexplored.
  - `pgrx` wraps a lot of `unsafe` code, some of which has poorly-defined safety conditions. It may be easy to induce illogical and undesirable behaviors even from safe code with `pgrx`, and some of these wrappers may be fundamentally unsound. Please report any issues that may arise.
  - Not all of Postgres' internals are included or even wrapped.  This isn't due to it not being possible, it's simply due to it being an incredibly large task.  If you identify internal Postgres APIs you need, open an issue and we'll get them exposed, at least through the `pgrx::pg_sys` module.
- - Windows is not supported.  It could be, but will require a bit of work with `cargo-pgrx` and figuring out how to compile `pgrx`'s "cshim" static library.
  - Sessions started before `ALTER EXTENSION my_extension UPDATE;` will continue to see the old version of `my_extension`. New sessions will see the updated version of the extension.
  - `pgrx` is used by many "in production", but it is not "1.0.0" or above, despite that being recommended by SemVer for production-quality software. This is because there are many unresolved soundness and ergonomics questions that will likely require breaking changes to resolve, in some cases requiring cutting-edge Rust features to be able to expose sound interfaces. While a 1.0.0 release is intended at some point, it seems prudent to wait until it seems like a 2.0.0 release would not be needed the next week and the remaining questions can be deferred.
 
@@ -296,9 +324,9 @@ but rather extend additional support for other kinds of Rust code. These are not
 ### "unsafe-postgres": Allow compilation for Postgres forks that have a different ABI
 
 As of Postgres 15, forks are allowed to specify they use a different ABI than canonical Postgres.
-Since pgrx makes countless assumptions about Postgres' internal ABI it is not possible for it to 
+Since pgrx makes countless assumptions about Postgres' internal ABI it is not possible for it to
 guarantee that a compiled pgrx extension will probably execute within such a Postgres fork.  You,
-dear compiler runner, can make this guarantee for yourself by specifying the `unsafe-postgres` 
+dear compiler runner, can make this guarantee for yourself by specifying the `unsafe-postgres`
 feature flag.  Otherwise, a pgrx extension will fail to compile with an error similar to:
 
 ```
@@ -344,7 +372,7 @@ This approach can also be used in extensions to ensure a matching version of `ca
 ## License
 
 ```
-Portions Copyright 2019-2021 ZomboDB, LLC.  
+Portions Copyright 2019-2021 ZomboDB, LLC.
 Portions Copyright 2021-2023 Technology Concepts & Design, Inc.
 Portions Copyright 2023 PgCentral Foundation, Inc.
 
@@ -352,5 +380,5 @@ All rights reserved.
 Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 ```
 
-[Discord]: https://discord.gg/hPb93Y9
+[Discord]: https://discord.gg/PMrpdJsqcJ
 [timecrate]: https://crates.io/crates/time

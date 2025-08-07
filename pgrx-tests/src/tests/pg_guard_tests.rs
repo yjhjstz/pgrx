@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 //LICENSE Portions Copyright 2019-2021 ZomboDB, LLC.
 //LICENSE
 //LICENSE Portions Copyright 2021-2023 Technology Concepts & Design, Inc.
@@ -17,25 +18,27 @@ fn extern_func() -> bool {
 // This ensures that parameterized function compiles when it has `pg_guard` attached to it
 #[pg_guard]
 // Uncommenting the line below will make it fail to compile
-// #[no_mangle]
-extern "C" fn extern_func_impl<T>() -> bool {
+// #[unsafe(no_mangle)]
+extern "C-unwind" fn extern_func_impl<T>() -> bool {
+    let _ = PhantomData::<T>;
     true
 }
 
 // This ensures that non-parameterized function compiles when it has `pg_guard` attached to it
 // and [no_mangle]
 #[pg_guard]
-#[no_mangle]
-extern "C" fn extern_func_impl_1() -> bool {
+#[unsafe(no_mangle)]
+extern "C-unwind" fn extern_func_impl_1() -> bool {
     true
 }
 
 // This ensures that lifetime-parameterized function compiles when it has `pg_guard` attached to it
 // and [no_mangle]
 #[pg_guard]
-#[no_mangle]
-#[allow(unused_lifetimes)]
-extern "C" fn extern_func_impl_2<'a>() -> bool {
+#[unsafe(no_mangle)]
+#[allow(unused_lifetimes, clippy::extra_unused_lifetimes)]
+extern "C-unwind" fn extern_func_impl_2<'a>() -> bool {
+    let _ = PhantomData::<&'a ()>;
     true
 }
 

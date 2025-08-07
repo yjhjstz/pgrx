@@ -121,7 +121,7 @@ impl<T> Nullable<T> {
     where
         &'a A: Into<Cow<'a, str>>,
     {
-        self.into_option().expect(msg.into().as_ref())
+        self.into_option().unwrap_or_else(|| panic!("{}", msg.into().as_ref()))
     }
     /// Convert to a result, returning `err` if this enum is `Null`.
     #[inline]
@@ -253,7 +253,7 @@ where
 /// because of the skip behavior
 pub struct BitSliceNulls<'a>(pub &'a BitSlice<u8>);
 
-impl<'a> NullLayout<usize> for BitSliceNulls<'a> {
+impl NullLayout<usize> for BitSliceNulls<'_> {
     /// Returns true if this container has any nulls, checked at run-time.
     /// # Performance
     /// This implementation should be very fast, since all it needs to do
@@ -287,7 +287,7 @@ impl<'a> NullLayout<usize> for BitSliceNulls<'a> {
 
 pub struct BoolSliceNulls<'a>(pub &'a [bool]);
 
-impl<'a> NullLayout<usize> for BoolSliceNulls<'a> {
+impl NullLayout<usize> for BoolSliceNulls<'_> {
     /// Returns true if this container has any nulls, checked at run-time.
     /// # Performance
     /// This implementation requires iterating over one boolean per
@@ -372,7 +372,7 @@ pub struct MaybeStrictNulls<Inner: NullLayout<usize>> {
     pub inner: Option<Inner>,
 }
 
-impl<'mcx, Inner> MaybeStrictNulls<Inner>
+impl<Inner> MaybeStrictNulls<Inner>
 where
     Inner: NullLayout<usize>,
 {
@@ -382,10 +382,7 @@ where
     }
     #[inline]
     pub fn is_strict(&self) -> bool {
-        match self.inner {
-            Some(_) => false,
-            None => true,
-        }
+        self.inner.is_none()
     }
     #[inline]
     pub fn get_inner(&self) -> Option<&Inner> {
@@ -393,7 +390,7 @@ where
     }
 }
 
-impl<'mcx, Inner> NullLayout<usize> for MaybeStrictNulls<Inner>
+impl<Inner> NullLayout<usize> for MaybeStrictNulls<Inner>
 where
     Inner: NullLayout<usize>,
 {

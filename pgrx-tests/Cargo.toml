@@ -10,15 +10,15 @@
 
 [package]
 name = "pgrx-tests"
-version = "0.12.7"
-authors = ["PgCentral Foundation, Inc. <contact@pgcentral.org>"]
-license = "MIT"
+version = "0.16.0"
+authors.workspace = true
+license.workspace = true
 description = "Test framework for 'pgrx'-based Postgres extensions"
-homepage = "https://github.com/pgcentralfoundation/pgrx/"
-repository = "https://github.com/pgcentralfoundation/pgrx/"
+homepage.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/pgrx-tests"
 readme = "README.md"
-edition = "2021"
+edition.workspace = true
 include = ["src/**/*", "README.md", "!**/tests/**/*"]
 
 [lib]
@@ -30,16 +30,19 @@ path = "./src/bin/pgrx_embed.rs"
 
 [features]
 default = ["proptest"]
-pg12 = ["pgrx/pg12"]
 pg13 = ["pgrx/pg13"]
 pg14 = ["pgrx/pg14"]
 pg15 = ["pgrx/pg15"]
 pg16 = ["pgrx/pg16"]
 pg17 = ["pgrx/pg17"]
+pg18 = ["pgrx/pg18"]
 pg_test = []
 proptest = ["dep:proptest"]
 cshim = ["pgrx/cshim"]
-no-schema-generation = ["pgrx/no-schema-generation", "pgrx-macros/no-schema-generation"]
+no-schema-generation = [
+    "pgrx/no-schema-generation",
+    "pgrx-macros/no-schema-generation",
+]
 nightly = ["pgrx/nightly"]
 
 [package.metadata.docs.rs]
@@ -61,18 +64,30 @@ owo-colors.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shlex.workspace = true
 thiserror.workspace = true
 
 paste = "1"
-postgres = "0.19.7"
+postgres = "0.19.10"
 proptest = { version = "1", optional = true }
-sysinfo = "0.30.10"
-rand = "0.8.5"
+tempfile = "3.19.1"
+sysinfo = "0.34.2"
+rand = "0.9.0"
 
 [dependencies.pgrx] # Not unified in workspace due to default-features key
 path = "../pgrx"
 default-features = false
-version = "=0.12.7"
+version = "=0.16.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3.9", features = [
+    "securitybaseapi",
+    "minwinbase",
+    "namedpipeapi",
+    "winbase",
+    "winerror",
+    "winnt",
+] }
 
 [dev-dependencies]
 eyre.workspace = true # testing functions that return `eyre::Result`

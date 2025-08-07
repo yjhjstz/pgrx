@@ -17,6 +17,25 @@ use pgrx_sql_entity_graph::metadata::{
 use std::ops::Deref;
 use std::os::raw::c_char;
 
+macro_rules! pgstat_count_impl {
+    ($name:ident, $new_field:ident, $old_field:ident) => {
+        pub fn $name(&mut self) {
+            if self.should_count_relation() {
+                let info = self.pgstat_info;
+
+                #[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
+                unsafe {
+                    (*info).counts.$new_field += 1;
+                }
+                #[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+                unsafe {
+                    (*info).t_counts.$old_field += 1;
+                }
+            }
+        }
+    };
+}
+
 pub struct PgRelation {
     boxed: PgBox<pg_sys::RelationData>,
     need_close: bool,
@@ -216,7 +235,7 @@ impl PgRelation {
     /// // assert that the tuple descriptor has 12 attributes
     /// assert_eq!(tupdesc.len(), 12);
     /// ```
-    pub fn tuple_desc(&self) -> PgTupleDesc {
+    pub fn tuple_desc(&self) -> PgTupleDesc<'_> {
         PgTupleDesc::from_relation(self)
     }
 
@@ -290,6 +309,45 @@ impl PgRelation {
         self.need_close = true;
         self
     }
+
+    #[inline(always)]
+    fn should_count_relation(&mut self) -> bool {
+        if !self.pgstat_info.is_null() {
+            return true;
+        }
+
+        #[cfg(any(feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18"))]
+        if self.pgstat_enabled {
+            unsafe {
+                pg_sys::pgstat_assoc_relation(self.as_ptr());
+                assert!(!self.pgstat_info.is_null());
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pgstat_count_impl!(count_heap_scan, numscans, t_numscans);
+    pgstat_count_impl!(count_heap_getnext, tuples_returned, t_tuples_returned);
+    pgstat_count_impl!(count_heap_fetch, tuples_fetched, t_tuples_fetched);
+    pgstat_count_impl!(count_index_scan, numscans, t_numscans);
+    pgstat_count_impl!(count_buffer_read, blocks_fetched, t_blocks_fetched);
+    pgstat_count_impl!(count_buffer_hit, blocks_hit, t_blocks_hit);
+
+    pub fn count_index_tuples(&mut self, n: i64) {
+        if self.should_count_relation() {
+            let info = self.pgstat_info;
+            #[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
+            unsafe {
+                (*info).counts.tuples_returned += n;
+            }
+            #[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+            unsafe {
+                (*info).t_counts.t_tuples_returned += n;
+            }
+        }
+    }
 }
 
 impl Clone for PgRelation {
@@ -308,10 +366,10 @@ impl FromDatum for PgRelation {
         if is_null {
             None
         } else {
-            Some(PgRelation::with_lock(
-                pg_sys::Oid::from(u32::try_from(datum.value()).ok()?),
-                pg_sys::AccessShareLock as pg_sys::LOCKMODE,
-            ))
+            // the `PgRelation` SQL type is `REGCLASS`, which is just an `OID`, so that's how
+            // we'll get the value.
+            let oid = pg_sys::Oid::from_datum(datum, false)?;
+            Some(PgRelation::with_lock(oid, pg_sys::AccessShareLock as pg_sys::LOCKMODE))
         }
     }
 }

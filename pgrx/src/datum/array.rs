@@ -229,11 +229,11 @@ impl<'mcx, T: UnboxDatum> Array<'mcx, T> {
         }
         match self.null_slice.get_inner().map(|v| (v, v.is_null(index))) {
             // No null_slice, strict array.
-            None => self.get_strict_inner(index).map(|elem| Some(elem)),
+            None => self.get_strict_inner(index).map(Some),
             // self.null_slice exists but index is not in bounds.
-            Some((_, None)) => return None,
+            Some((_, None)) => None,
             // Elem is null
-            Some((_, Some(true))) => return Some(None),
+            Some((_, Some(true))) => Some(None),
             // Elem is not null.
             Some((nulls, Some(false))) => self.get_nullable_inner(nulls, index),
         }
@@ -569,7 +569,9 @@ mod casper {
                 8 => pg_sys::Datum::from(byval_read::<u64>(ptr)),
                 _ => unreachable!("`N` must be 1, 2, 4, or 8 (got {N})"),
             };
-            Some(T::unbox(core::mem::transmute(datum)))
+            Some(T::unbox(core::mem::transmute::<pgrx_pg_sys::Datum, crate::datum::Datum<'_>>(
+                datum,
+            )))
         }
 
         #[inline(always)]
@@ -591,7 +593,9 @@ mod casper {
             ptr: *const u8,
         ) -> Option<T::As<'arr>> {
             let datum = pg_sys::Datum::from(ptr);
-            Some(T::unbox(core::mem::transmute(datum)))
+            Some(T::unbox(core::mem::transmute::<pgrx_pg_sys::Datum, crate::datum::Datum<'_>>(
+                datum,
+            )))
         }
 
         #[inline]
@@ -615,7 +619,9 @@ mod casper {
             ptr: *const u8,
         ) -> Option<T::As<'arr>> {
             let datum = pg_sys::Datum::from(ptr);
-            Some(T::unbox(core::mem::transmute(datum)))
+            Some(T::unbox(core::mem::transmute::<pgrx_pg_sys::Datum, crate::datum::Datum<'_>>(
+                datum,
+            )))
         }
 
         #[inline]
@@ -640,7 +646,9 @@ mod casper {
             ptr: *const u8,
         ) -> Option<T::As<'arr>> {
             let datum = pg_sys::Datum::from(ptr);
-            Some(T::unbox(core::mem::transmute(datum)))
+            Some(T::unbox(core::mem::transmute::<pgrx_pg_sys::Datum, crate::datum::Datum<'_>>(
+                datum,
+            )))
         }
 
         #[inline]
@@ -1012,41 +1020,44 @@ where
     }
 }
 
+#[inline]
+/// Converts an iterator into an array datum
+fn array_datum_from_iter<T: IntoDatum>(elements: impl Iterator<Item = T>) -> Option<pg_sys::Datum> {
+    let mut state = unsafe {
+        pg_sys::initArrayResult(
+            T::type_oid(),
+            PgMemoryContexts::CurrentMemoryContext.value(),
+            // All elements use the same memory context
+            false,
+        )
+    };
+    for s in elements {
+        let datum = s.into_datum();
+        let isnull = datum.is_none();
+
+        unsafe {
+            state = pg_sys::accumArrayResult(
+                state,
+                datum.unwrap_or(0.into()),
+                isnull,
+                T::type_oid(),
+                PgMemoryContexts::CurrentMemoryContext.value(),
+            );
+        }
+    }
+
+    // Should not happen: {init, accum}ArrayResult both return non-null pointers
+    assert!(!state.is_null());
+
+    Some(unsafe { pg_sys::makeArrayResult(state, PgMemoryContexts::CurrentMemoryContext.value()) })
+}
+
 impl<T> IntoDatum for Vec<T>
 where
     T: IntoDatum,
 {
     fn into_datum(self) -> Option<pg_sys::Datum> {
-        let mut state = unsafe {
-            pg_sys::initArrayResult(
-                T::type_oid(),
-                PgMemoryContexts::CurrentMemoryContext.value(),
-                false,
-            )
-        };
-        for s in self {
-            let datum = s.into_datum();
-            let isnull = datum.is_none();
-
-            unsafe {
-                state = pg_sys::accumArrayResult(
-                    state,
-                    datum.unwrap_or(0.into()),
-                    isnull,
-                    T::type_oid(),
-                    PgMemoryContexts::CurrentMemoryContext.value(),
-                );
-            }
-        }
-
-        if state.is_null() {
-            // shouldn't happen
-            None
-        } else {
-            Some(unsafe {
-                pg_sys::makeArrayResult(state, PgMemoryContexts::CurrentMemoryContext.value())
-            })
-        }
+        array_datum_from_iter(self.into_iter())
     }
 
     fn type_oid() -> pg_sys::Oid {
@@ -1073,36 +1084,7 @@ where
     T: IntoDatum + Copy + 'a,
 {
     fn into_datum(self) -> Option<pg_sys::Datum> {
-        let mut state = unsafe {
-            pg_sys::initArrayResult(
-                T::type_oid(),
-                PgMemoryContexts::CurrentMemoryContext.value(),
-                false,
-            )
-        };
-        for s in self {
-            let datum = s.into_datum();
-            let isnull = datum.is_none();
-
-            unsafe {
-                state = pg_sys::accumArrayResult(
-                    state,
-                    datum.unwrap_or(0.into()),
-                    isnull,
-                    T::type_oid(),
-                    PgMemoryContexts::CurrentMemoryContext.value(),
-                );
-            }
-        }
-
-        if state.is_null() {
-            // shouldn't happen
-            None
-        } else {
-            Some(unsafe {
-                pg_sys::makeArrayResult(state, PgMemoryContexts::CurrentMemoryContext.value())
-            })
-        }
+        array_datum_from_iter(self.iter().copied())
     }
 
     fn type_oid() -> pg_sys::Oid {

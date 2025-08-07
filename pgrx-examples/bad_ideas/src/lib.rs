@@ -10,11 +10,11 @@
 use pgrx::prelude::*;
 use pgrx::{check_for_interrupts, info, register_xact_callback, PgRelation, PgXactCallbackEvent};
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::panic::catch_unwind;
 use std::process::Command;
 
-::pgrx::pg_module_magic!();
+pgrx::pg_module_magic!(name, version);
 
 #[pg_extern]
 fn panic(s: &str) -> bool {
@@ -84,9 +84,15 @@ fn write_file(filename: &str, bytes: &[u8]) -> i64 {
 
 #[pg_extern]
 fn http(url: &str) -> String {
-    let response = ureq::Agent::new().get(url).call().expect("invalid http response");
-
-    response.into_string().expect("invalid string from response")
+    let mut response =
+        ureq::Agent::new_with_defaults().get(url).call().expect("invalid http response");
+    let mut buf = Vec::new();
+    let _count = response
+        .body_mut()
+        .as_reader()
+        .read_to_end(&mut buf)
+        .expect("should be able to read body from the response");
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 #[pg_extern]
@@ -108,9 +114,9 @@ fn random_abort() {
 }
 
 #[pg_guard]
-pub unsafe extern "C" fn _PG_init() {
+pub unsafe extern "C-unwind" fn _PG_init() {
     #[pg_guard]
-    extern "C" fn random_abort_callback(
+    extern "C-unwind" fn random_abort_callback(
         event: pg_sys::XactEvent::Type,
         _arg: *mut std::os::raw::c_void,
     ) {

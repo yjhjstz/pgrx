@@ -12,7 +12,7 @@ use pgrx_pg_config::{PgConfig, Pgrx, SUPPORTED_VERSIONS};
 pub(crate) fn pgrx_default() -> eyre::Result<Pgrx> {
     let mut pgrx = Pgrx::default();
 
-    rss::PostgreSQLVersionRss::new(&SUPPORTED_VERSIONS())?
+    rss::PostgreSQLVersionRss::try_new(&SUPPORTED_VERSIONS())?
         .into_iter()
         .for_each(|version| pgrx.push(PgConfig::from(version)));
 
@@ -25,23 +25,37 @@ mod rss {
     use pgrx_pg_config::{PgMinorVersion, PgVersion};
     use serde::Deserialize;
     use std::collections::BTreeMap;
+    use std::io::Read;
     use url::Url;
 
     use crate::command::build_agent_for_url;
 
+    #[cfg(not(target_os = "windows"))]
+    fn download_url(major: u16, minor: u16) -> String {
+        format!("https://ftp.postgresql.org/pub/source/v{major}.{minor}/postgresql-{major}.{minor}.tar.bz2")
+    }
+
+    #[cfg(target_os = "windows")]
+    fn download_url(major: u16, minor: u16) -> String {
+        format!("https://get.enterprisedb.com/postgresql/postgresql-{major}.{minor}-1-windows-x64-binaries.zip")
+    }
+
     pub(super) struct PostgreSQLVersionRss;
 
     impl PostgreSQLVersionRss {
-        pub(super) fn new(supported_versions: &[PgVersion]) -> eyre::Result<Vec<PgVersion>> {
+        pub(super) fn try_new(supported_versions: &[PgVersion]) -> eyre::Result<Vec<PgVersion>> {
             static VERSIONS_RSS_URL: &str = "https://www.postgresql.org/versions.rss";
 
             let http_client = build_agent_for_url(VERSIONS_RSS_URL)?;
-            let response = http_client
+            let mut response = http_client
                 .get(VERSIONS_RSS_URL)
                 .call()
                 .wrap_err_with(|| format!("unable to retrieve {VERSIONS_RSS_URL}"))?;
 
-            let rss: Rss = match serde_xml_rs::from_str(&response.into_string()?) {
+            let mut buf = Vec::new();
+            let _count = response.body_mut().as_reader().read_to_end(&mut buf)?;
+            let body = String::from_utf8(buf)?;
+            let rss: Rss = match serde_xml_rs::from_str(&body) {
                 Ok(rss) => rss,
                 Err(e) => return Err(e.into()),
             };
@@ -65,9 +79,7 @@ mod rss {
                     if matches!(known_pgver.minor, PgMinorVersion::Latest) {
                         // fill in the latest minor version number and its url
                         known_pgver.minor = PgMinorVersion::Release(minor);
-                        known_pgver.url = Some(Url::parse(
-                                &format!("https://ftp.postgresql.org/pub/source/v{major}.{minor}/postgresql-{major}.{minor}.tar.bz2")
-                            )?);
+                        known_pgver.url = Some(Url::parse(&download_url(major, minor))?);
                     }
                 }
             }

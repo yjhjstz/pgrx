@@ -7,6 +7,7 @@
 //LICENSE All rights reserved.
 //LICENSE
 //LICENSE Use of this source code is governed by the MIT license that can be found in the LICENSE file.
+mod alignment;
 mod complex;
 mod fixed_size;
 mod generic_enum;
@@ -15,7 +16,7 @@ mod hstore_clone;
 mod ordered;
 mod rust_enum;
 
-::pgrx::pg_module_magic!();
+pgrx::pg_module_magic!(name, version);
 
 #[cfg(test)]
 pub mod pg_test {

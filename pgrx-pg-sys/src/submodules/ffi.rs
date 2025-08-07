@@ -30,18 +30,18 @@ mod cee_scape {
     where
         F: for<'a> FnOnce(&'a SigJmpBufFields) -> c_int,
     {
-        extern "C" {
+        extern "C-unwind" {
             fn call_closure_with_sigsetjmp(
                 savemask: c_int,
                 closure_env_ptr: *mut c_void,
-                closure_code: extern "C" fn(
+                closure_code: extern "C-unwind" fn(
                     jbuf: *const SigJmpBufFields,
                     env_ptr: *mut c_void,
                 ) -> c_int,
             ) -> c_int;
         }
 
-        extern "C" fn call_from_c_to_rust<F>(
+        extern "C-unwind" fn call_from_c_to_rust<F>(
             jbuf: *const SigJmpBufFields,
             closure_env_ptr: *mut c_void,
         ) -> c_int
@@ -69,7 +69,7 @@ mod cee_scape {
 use cee_scape::{call_with_sigsetjmp, SigJmpBufFields};
 
 /**
-Given a closure that is assumed to be a wrapped Postgres `extern "C"` function, [pg_guard_ffi_boundary]
+Given a closure that is assumed to be a wrapped Postgres `extern "C-unwind"` function, [pg_guard_ffi_boundary]
 works with the Postgres and C runtimes to create a "barrier" that allows Rust to catch Postgres errors
 (`elog(ERROR)`) while running the supplied closure. This is done for the sake of allowing Rust to run
 destructors before Postgres destroys the memory contexts that Rust-in-Postgres code may be enmeshed in.
@@ -82,7 +82,7 @@ Wrapping the FFI into Postgres enables
 But only the first of these is considered paramount.
 
 At all times PGRX reserves the right to choose an implementation that achieves memory safety.
-Currently, this function is used to protect **every** bindgen-generated Postgres `extern "C"` function.
+Currently, this function is used to protect **every** bindgen-generated Postgres `extern "C-unwind"` function.
 
 Generally, the only time *you'll* need to use this function is when calling a Postgres-provided
 function pointer.
@@ -154,6 +154,7 @@ pub unsafe fn pg_guard_ffi_boundary<T, F: FnOnce() -> T>(f: F) -> T {
     unsafe { pg_guard_ffi_boundary_impl(f) }
 }
 
+#[allow(clippy::missing_transmute_annotations)]
 #[inline(always)]
 #[track_caller]
 unsafe fn pg_guard_ffi_boundary_impl<T, F: FnOnce() -> T>(f: F) -> T {
@@ -207,24 +208,37 @@ unsafe fn pg_guard_ffi_boundary_impl<T, F: FnOnce() -> T>(f: F) -> T {
             // copy out the fields we need to support pgrx' error handling
             let level = errdata.elevel.into();
             let sqlerrcode = errdata.sqlerrcode.into();
-            let message = errdata
-                .message
-                .is_null()
-                .then(|| String::from("<null error message>"))
-                .unwrap_or_else(|| CStr::from_ptr(errdata.message).to_string_lossy().to_string());
-            let detail = errdata.detail.is_null().then_some(None).unwrap_or_else(|| {
-                Some(CStr::from_ptr(errdata.detail).to_string_lossy().to_string())
-            });
-            let hint = errdata.hint.is_null().then_some(None).unwrap_or_else(|| {
-                Some(CStr::from_ptr(errdata.hint).to_string_lossy().to_string())
-            });
-            let funcname = errdata.funcname.is_null().then_some(None).unwrap_or_else(|| {
-                Some(CStr::from_ptr(errdata.funcname).to_string_lossy().to_string())
-            });
-            let file =
-                errdata.filename.is_null().then(|| String::from("<null filename>")).unwrap_or_else(
-                    || CStr::from_ptr(errdata.filename).to_string_lossy().to_string(),
-                );
+            let message = if errdata.message.is_null() {
+                String::from("<null error message>")
+            } else {
+                CStr::from_ptr(errdata.message).to_string_lossy().to_string()
+            };
+            let detail = if errdata.detail.is_null() {
+                None
+            } else {
+                {
+                    Some(CStr::from_ptr(errdata.detail).to_string_lossy().to_string())
+                }
+            };
+            let hint = if errdata.hint.is_null() {
+                None
+            } else {
+                {
+                    Some(CStr::from_ptr(errdata.hint).to_string_lossy().to_string())
+                }
+            };
+            let funcname = if errdata.funcname.is_null() {
+                None
+            } else {
+                {
+                    Some(CStr::from_ptr(errdata.funcname).to_string_lossy().to_string())
+                }
+            };
+            let file = if errdata.filename.is_null() {
+                String::from("<null filename>")
+            } else {
+                CStr::from_ptr(errdata.filename).to_string_lossy().to_string()
+            };
             let line = errdata.lineno as _;
 
             // clean up after ourselves by freeing the result of [CopyErrorData] and restoring

@@ -14,6 +14,7 @@
 
 use crate::{pg_sys, void_mut_ptr, FromDatum, PgBox, PgMemoryContexts};
 use core::{ptr, slice};
+use pgrx_pg_sys::ffi::pg_guard_ffi_boundary;
 
 /// A macro for specifying default argument values so they get properly translated to SQL in
 /// `CREATE FUNCTION` statements
@@ -313,7 +314,7 @@ pub unsafe fn direct_function_call<R: FromDatum>(
 ///
 /// This function is unsafe as the function you're calling is also unsafe
 pub unsafe fn direct_pg_extern_function_call<R: FromDatum>(
-    func: unsafe extern "C" fn(pg_sys::FunctionCallInfo) -> pg_sys::Datum,
+    func: unsafe extern "C-unwind" fn(pg_sys::FunctionCallInfo) -> pg_sys::Datum,
     args: &[Option<pg_sys::Datum>],
 ) -> Option<R> {
     direct_pg_extern_function_call_as_datum(func, args).and_then(|d| R::from_datum(d, false))
@@ -376,10 +377,10 @@ unsafe fn direct_function_call_as_datum_internal(
 ///
 /// This function is unsafe as the function you're calling is also unsafe
 pub unsafe fn direct_pg_extern_function_call_as_datum(
-    func: unsafe extern "C" fn(pg_sys::FunctionCallInfo) -> pg_sys::Datum,
+    func: unsafe extern "C-unwind" fn(pg_sys::FunctionCallInfo) -> pg_sys::Datum,
     args: &[Option<pg_sys::Datum>],
 ) -> Option<pg_sys::Datum> {
-    direct_function_call_as_datum_internal(|fcinfo| func(fcinfo), args)
+    direct_function_call_as_datum_internal(|fcinfo| pg_guard_ffi_boundary(|| func(fcinfo)), args)
 }
 
 #[inline]

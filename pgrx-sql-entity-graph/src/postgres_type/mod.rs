@@ -23,6 +23,7 @@ use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{DeriveInput, Generics, ItemStruct, Lifetime, LifetimeParam};
 
+pub use crate::postgres_type::entity::Alignment;
 use crate::{CodeEnrichment, ToSqlConfig};
 
 /// A parsed `#[derive(PostgresType)]` item.
@@ -54,7 +55,10 @@ pub struct PostgresTypeDerive {
     generics: Generics,
     in_fn: Ident,
     out_fn: Ident,
+    receive_fn: Option<Ident>,
+    send_fn: Option<Ident>,
     to_sql_config: ToSqlConfig,
+    alignment: Alignment,
 }
 
 impl PostgresTypeDerive {
@@ -63,16 +67,29 @@ impl PostgresTypeDerive {
         generics: Generics,
         in_fn: Ident,
         out_fn: Ident,
+        receive_fn: Option<Ident>,
+        send_fn: Option<Ident>,
         to_sql_config: ToSqlConfig,
+        alignment: Alignment,
     ) -> Result<CodeEnrichment<Self>, syn::Error> {
         if !to_sql_config.overrides_default() {
             crate::ident_is_acceptable_to_postgres(&name)?;
         }
-        Ok(CodeEnrichment(Self { generics, name, in_fn, out_fn, to_sql_config }))
+        Ok(CodeEnrichment(Self {
+            generics,
+            name,
+            in_fn,
+            out_fn,
+            receive_fn,
+            send_fn,
+            to_sql_config,
+            alignment,
+        }))
     }
 
     pub fn from_derive_input(
         derive_input: DeriveInput,
+        pg_binary_protocol: bool,
     ) -> Result<CodeEnrichment<Self>, syn::Error> {
         match derive_input.data {
             syn::Data::Struct(_) | syn::Data::Enum(_) => {}
@@ -90,12 +107,28 @@ impl PostgresTypeDerive {
             &format!("{}_out", derive_input.ident).to_lowercase(),
             derive_input.ident.span(),
         );
+        let funcname_receive = (pg_binary_protocol).then(|| {
+            Ident::new(
+                &format!("{}_recv", derive_input.ident).to_lowercase(),
+                derive_input.ident.span(),
+            )
+        });
+        let funcname_send = (pg_binary_protocol).then(|| {
+            Ident::new(
+                &format!("{}_send", derive_input.ident).to_lowercase(),
+                derive_input.ident.span(),
+            )
+        });
+        let alignment = Alignment::from_attributes(derive_input.attrs.as_slice())?;
         Self::new(
             derive_input.ident,
             derive_input.generics,
             funcname_in,
             funcname_out,
+            funcname_receive,
+            funcname_send,
             to_sql_config,
+            alignment,
         )
     }
 }
@@ -124,10 +157,49 @@ impl ToEntityGraphTokens for PostgresTypeDerive {
 
         let in_fn = &self.in_fn;
         let out_fn = &self.out_fn;
+        let stringify_receive_fn = self
+            .receive_fn
+            .as_ref()
+            .map(|f| quote! { Some(stringify!(#f)) })
+            .unwrap_or_else(|| quote! { None });
+        let stringify_send_fn = self
+            .send_fn
+            .as_ref()
+            .map(|f| quote! { Some(stringify!(#f)) })
+            .unwrap_or_else(|| quote! { None });
+        let receive_fn_module_path = self
+            .receive_fn
+            .as_ref()
+            .map(|f| {
+                quote! {Some({
+                    let in_fn = stringify!(#f);
+                    let mut path_items: Vec<_> = in_fn.split("::").collect();
+                    let _ = path_items.pop(); // Drop the one we don't want.
+                    path_items.join("::")
+                })}
+            })
+            .unwrap_or_else(|| quote! { None });
+        let send_fn_module_path = self
+            .send_fn
+            .as_ref()
+            .map(|f| {
+                quote! {Some({
+                    let out_fn = stringify!(#f);
+                    let mut path_items: Vec<_> = out_fn.split("::").collect();
+                    let _ = path_items.pop(); // Drop the one we don't want.
+                    path_items.join("::")
+                })}
+            })
+            .unwrap_or_else(|| quote! { None });
 
         let sql_graph_entity_fn_name = format_ident!("__pgrx_internals_type_{}", self.name);
 
         let to_sql_config = &self.to_sql_config;
+
+        let alignment = match &self.alignment {
+            Alignment::On => quote! { Some(::std::mem::align_of::<#name>()) },
+            Alignment::Off => quote! { None },
+        };
 
         quote! {
             unsafe impl #impl_generics ::pgrx::pgrx_sql_entity_graph::metadata::SqlTranslatable for #name #ty_generics #where_clauses {
@@ -141,7 +213,7 @@ impl ToEntityGraphTokens for PostgresTypeDerive {
             }
 
 
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             #[doc(hidden)]
             #[allow(nonstandard_style, unknown_lints, clippy::no_mangle_with_rust_abi)]
             pub extern "Rust" fn  #sql_graph_entity_fn_name() -> ::pgrx::pgrx_sql_entity_graph::SqlGraphEntity {
@@ -189,7 +261,12 @@ impl ToEntityGraphTokens for PostgresTypeDerive {
                         let _ = path_items.pop(); // Drop the one we don't want.
                         path_items.join("::")
                     },
+                    receive_fn: #stringify_receive_fn,
+                    receive_fn_module_path: #receive_fn_module_path,
+                    send_fn: #stringify_send_fn,
+                    send_fn_module_path: #send_fn_module_path,
                     to_sql_config: #to_sql_config,
+                    alignment: #alignment,
                 };
                 ::pgrx::pgrx_sql_entity_graph::SqlGraphEntity::Type(submission)
             }
@@ -202,9 +279,26 @@ impl ToRustCodeTokens for PostgresTypeDerive {}
 impl Parse for CodeEnrichment<PostgresTypeDerive> {
     fn parse(input: ParseStream) -> Result<Self, syn::Error> {
         let ItemStruct { attrs, ident, generics, .. } = input.parse()?;
+
+        let pg_binary_protocol = attrs.iter().any(|a| a.path().is_ident("pg_binary_protocol"));
+
         let to_sql_config = ToSqlConfig::from_attributes(attrs.as_slice())?.unwrap_or_default();
-        let in_fn = Ident::new(&format!("{}_in", ident).to_lowercase(), ident.span());
-        let out_fn = Ident::new(&format!("{}_out", ident).to_lowercase(), ident.span());
-        PostgresTypeDerive::new(ident, generics, in_fn, out_fn, to_sql_config)
+        let in_fn = Ident::new(&format!("{ident}_in").to_lowercase(), ident.span());
+        let out_fn = Ident::new(&format!("{ident}_out").to_lowercase(), ident.span());
+        let receive_fn = (pg_binary_protocol)
+            .then(|| Ident::new(&format!("{ident}_recv").to_lowercase(), ident.span()));
+        let send_fn = (pg_binary_protocol)
+            .then(|| Ident::new(&format!("{ident}_send").to_lowercase(), ident.span()));
+        let alignment = Alignment::from_attributes(attrs.as_slice())?;
+        PostgresTypeDerive::new(
+            ident,
+            generics,
+            in_fn,
+            out_fn,
+            receive_fn,
+            send_fn,
+            to_sql_config,
+            alignment,
+        )
     }
 }

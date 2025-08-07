@@ -74,7 +74,9 @@ mod tests {
         }
 
         #[pg_trigger]
-        fn signature_aliased_both(_trigger: AliasedBorrowedPgTrigger) -> AliasedTriggerResult<'_> {
+        fn signature_aliased_both(
+            _trigger: AliasedBorrowedPgTrigger<'_>,
+        ) -> AliasedTriggerResult<'_> {
             unimplemented!("Only testing signature compiles")
         }
     }
@@ -147,7 +149,7 @@ mod tests {
 
         let field = "booper";
 
-        if new.get_by_name(field)? == Option::<&str>::None {
+        if (new.get_by_name::<&str>(field)?).is_none() {
             new.set_by_name(field, "Swooper")?;
         }
 

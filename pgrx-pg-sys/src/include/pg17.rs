@@ -5,7 +5,7 @@ easy to reference on docs.rs. Bindings are regenerated for your
 build of pgrx, and the values of your Postgres version may differ.
 */
 use crate as pg_sys;
-use crate::{Datum, Oid, PgNode};
+use crate::{Datum, MultiXactId, Oid, PgNode, TransactionId};
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct __BindgenBitfieldUnit<Storage> {
@@ -22,26 +22,49 @@ where
     Storage: AsRef<[u8]> + AsMut<[u8]>,
 {
     #[inline]
+    fn extract_bit(byte: u8, index: usize) -> bool {
+        let bit_index = if cfg!(target_endian = "big") { 7 - (index % 8) } else { index % 8 };
+        let mask = 1 << bit_index;
+        byte & mask == mask
+    }
+    #[inline]
     pub fn get_bit(&self, index: usize) -> bool {
         debug_assert!(index / 8 < self.storage.as_ref().len());
         let byte_index = index / 8;
         let byte = self.storage.as_ref()[byte_index];
+        Self::extract_bit(byte, index)
+    }
+    #[inline]
+    pub unsafe fn raw_get_bit(this: *const Self, index: usize) -> bool {
+        debug_assert!(index / 8 < core::mem::size_of::<Storage>());
+        let byte_index = index / 8;
+        let byte = *(core::ptr::addr_of!((*this).storage) as *const u8).offset(byte_index as isize);
+        Self::extract_bit(byte, index)
+    }
+    #[inline]
+    fn change_bit(byte: u8, index: usize, val: bool) -> u8 {
         let bit_index = if cfg!(target_endian = "big") { 7 - (index % 8) } else { index % 8 };
         let mask = 1 << bit_index;
-        byte & mask == mask
+        if val {
+            byte | mask
+        } else {
+            byte & !mask
+        }
     }
     #[inline]
     pub fn set_bit(&mut self, index: usize, val: bool) {
         debug_assert!(index / 8 < self.storage.as_ref().len());
         let byte_index = index / 8;
         let byte = &mut self.storage.as_mut()[byte_index];
-        let bit_index = if cfg!(target_endian = "big") { 7 - (index % 8) } else { index % 8 };
-        let mask = 1 << bit_index;
-        if val {
-            *byte |= mask;
-        } else {
-            *byte &= !mask;
-        }
+        *byte = Self::change_bit(*byte, index, val);
+    }
+    #[inline]
+    pub unsafe fn raw_set_bit(this: *mut Self, index: usize, val: bool) {
+        debug_assert!(index / 8 < core::mem::size_of::<Storage>());
+        let byte_index = index / 8;
+        let byte =
+            (core::ptr::addr_of_mut!((*this).storage) as *mut u8).offset(byte_index as isize);
+        *byte = Self::change_bit(*byte, index, val);
     }
     #[inline]
     pub fn get(&self, bit_offset: usize, bit_width: u8) -> u64 {
@@ -59,6 +82,21 @@ where
         val
     }
     #[inline]
+    pub unsafe fn raw_get(this: *const Self, bit_offset: usize, bit_width: u8) -> u64 {
+        debug_assert!(bit_width <= 64);
+        debug_assert!(bit_offset / 8 < core::mem::size_of::<Storage>());
+        debug_assert!((bit_offset + (bit_width as usize)) / 8 <= core::mem::size_of::<Storage>());
+        let mut val = 0;
+        for i in 0..(bit_width as usize) {
+            if Self::raw_get_bit(this, i + bit_offset) {
+                let index =
+                    if cfg!(target_endian = "big") { bit_width as usize - 1 - i } else { i };
+                val |= 1 << index;
+            }
+        }
+        val
+    }
+    #[inline]
     pub fn set(&mut self, bit_offset: usize, bit_width: u8, val: u64) {
         debug_assert!(bit_width <= 64);
         debug_assert!(bit_offset / 8 < self.storage.as_ref().len());
@@ -68,6 +106,18 @@ where
             let val_bit_is_set = val & mask == mask;
             let index = if cfg!(target_endian = "big") { bit_width as usize - 1 - i } else { i };
             self.set_bit(index + bit_offset, val_bit_is_set);
+        }
+    }
+    #[inline]
+    pub unsafe fn raw_set(this: *mut Self, bit_offset: usize, bit_width: u8, val: u64) {
+        debug_assert!(bit_width <= 64);
+        debug_assert!(bit_offset / 8 < core::mem::size_of::<Storage>());
+        debug_assert!((bit_offset + (bit_width as usize)) / 8 <= core::mem::size_of::<Storage>());
+        for i in 0..(bit_width as usize) {
+            let mask = 1 << i;
+            let val_bit_is_set = val & mask == mask;
+            let index = if cfg!(target_endian = "big") { bit_width as usize - 1 - i } else { i };
+            Self::raw_set_bit(this, index + bit_offset, val_bit_is_set);
         }
     }
 }
@@ -126,53 +176,25 @@ pub const ALIGNOF_PG_INT128_TYPE: u32 = 16;
 pub const ALIGNOF_SHORT: u32 = 2;
 pub const BLCKSZ: u32 = 8192;
 pub const DEF_PGPORT: u32 = 28817;
-#[allow(unsafe_code)]
-pub const DEF_PGPORT_STR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"28817\0") };
-#[allow(unsafe_code)]
-pub const DLSUFFIX: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b".so\0") };
-#[allow(unsafe_code)]
-pub const INT64_MODIFIER: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"l\0") };
+pub const DEF_PGPORT_STR: &::core::ffi::CStr = c"28817";
+pub const DLSUFFIX: &::core::ffi::CStr = c".so";
+pub const INT64_MODIFIER: &::core::ffi::CStr = c"l";
 pub const MAXIMUM_ALIGNOF: u32 = 8;
 pub const MEMSET_LOOP_LIMIT: u32 = 1024;
-#[allow(unsafe_code)]
-pub const PACKAGE_BUGREPORT: &::core::ffi::CStr = unsafe {
-    ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"pgsql-bugs@lists.postgresql.org\0")
-};
-#[allow(unsafe_code)]
-pub const PACKAGE_NAME: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"PostgreSQL\0") };
-#[allow(unsafe_code)]
-pub const PACKAGE_STRING: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"PostgreSQL 17.0\0") };
-#[allow(unsafe_code)]
-pub const PACKAGE_TARNAME: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"postgresql\0") };
-#[allow(unsafe_code)]
-pub const PACKAGE_URL: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"https://www.postgresql.org/\0") };
-#[allow(unsafe_code)]
-pub const PACKAGE_VERSION: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"17.0\0") };
-#[allow(unsafe_code)]
-pub const PG_KRB_SRVNAM: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"postgres\0") };
-#[allow(unsafe_code)]
-pub const PG_MAJORVERSION: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"17\0") };
+pub const PACKAGE_BUGREPORT: &::core::ffi::CStr = c"pgsql-bugs@lists.postgresql.org";
+pub const PACKAGE_NAME: &::core::ffi::CStr = c"PostgreSQL";
+pub const PACKAGE_STRING: &::core::ffi::CStr = c"PostgreSQL 17.5";
+pub const PACKAGE_TARNAME: &::core::ffi::CStr = c"postgresql";
+pub const PACKAGE_URL: &::core::ffi::CStr = c"https://www.postgresql.org/";
+pub const PACKAGE_VERSION: &::core::ffi::CStr = c"17.5";
+pub const PG_KRB_SRVNAM: &::core::ffi::CStr = c"postgres";
+pub const PG_MAJORVERSION: &::core::ffi::CStr = c"17";
 pub const PG_MAJORVERSION_NUM: u32 = 17;
-pub const PG_MINORVERSION_NUM: u32 = 0;
+pub const PG_MINORVERSION_NUM: u32 = 5;
 pub const PG_USE_STDBOOL: u32 = 1;
-#[allow(unsafe_code)]
-pub const PG_VERSION: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"17.0\0") };
-pub const PG_VERSION_NUM: u32 = 170000;
-#[allow(unsafe_code)]
-pub const PG_VERSION_STR: &::core::ffi::CStr = unsafe {
-    :: core :: ffi :: CStr :: from_bytes_with_nul_unchecked (b"PostgreSQL 17.0 on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, 64-bit\0")
-};
+pub const PG_VERSION: &::core::ffi::CStr = c"17.5";
+pub const PG_VERSION_NUM: u32 = 170005;
+pub const PG_VERSION_STR : & :: core :: ffi :: CStr = c"PostgreSQL 17.5 on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, 64-bit" ;
 pub const RELSEG_SIZE: u32 = 131072;
 pub const SIZEOF_BOOL: u32 = 1;
 pub const SIZEOF_LONG: u32 = 8;
@@ -190,9 +212,7 @@ pub const XLOG_BLCKSZ: u32 = 8192;
 pub const DEFAULT_XLOG_SEG_SIZE: u32 = 16777216;
 pub const NAMEDATALEN: u32 = 64;
 pub const FUNC_MAX_ARGS: u32 = 100;
-#[allow(unsafe_code)]
-pub const FMGR_ABI_EXTRA: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"PostgreSQL\0") };
+pub const FMGR_ABI_EXTRA: &::core::ffi::CStr = c"PostgreSQL";
 pub const INDEX_MAX_KEYS: u32 = 32;
 pub const PARTITION_MAX_KEYS: u32 = 32;
 pub const USE_FLOAT8_BYVAL: u32 = 1;
@@ -205,352 +225,16 @@ pub const DEFAULT_BACKEND_FLUSH_AFTER: u32 = 0;
 pub const DEFAULT_BGWRITER_FLUSH_AFTER: u32 = 64;
 pub const DEFAULT_CHECKPOINT_FLUSH_AFTER: u32 = 32;
 pub const WRITEBACK_MAX_PENDING_FLUSHES: u32 = 256;
-#[allow(unsafe_code)]
-pub const DEFAULT_PGSOCKET_DIR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/tmp\0") };
-#[allow(unsafe_code)]
-pub const DEFAULT_EVENT_SOURCE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"PostgreSQL\0") };
+pub const DEFAULT_PGSOCKET_DIR: &::core::ffi::CStr = c"/tmp";
+pub const DEFAULT_EVENT_SOURCE: &::core::ffi::CStr = c"PostgreSQL";
 pub const PG_CACHE_LINE_SIZE: u32 = 128;
 pub const PG_IO_ALIGN_SIZE: u32 = 4096;
 pub const TRACE_SORT: u32 = 1;
-pub const _DEFAULT_SOURCE: u32 = 1;
-pub const __GLIBC_USE_ISOC2X: u32 = 0;
-pub const __USE_ISOC11: u32 = 1;
-pub const __USE_ISOC99: u32 = 1;
-pub const __USE_ISOC95: u32 = 1;
-pub const __USE_POSIX_IMPLICITLY: u32 = 1;
-pub const _POSIX_SOURCE: u32 = 1;
-pub const _POSIX_C_SOURCE: u32 = 200809;
-pub const __USE_POSIX: u32 = 1;
-pub const __USE_POSIX2: u32 = 1;
-pub const __USE_POSIX199309: u32 = 1;
-pub const __USE_POSIX199506: u32 = 1;
-pub const __USE_XOPEN2K: u32 = 1;
-pub const __USE_XOPEN2K8: u32 = 1;
-pub const _ATFILE_SOURCE: u32 = 1;
-pub const __WORDSIZE: u32 = 64;
-pub const __WORDSIZE_TIME64_COMPAT32: u32 = 1;
-pub const __SYSCALL_WORDSIZE: u32 = 64;
-pub const __TIMESIZE: u32 = 64;
-pub const __USE_MISC: u32 = 1;
-pub const __USE_ATFILE: u32 = 1;
-pub const __USE_FORTIFY_LEVEL: u32 = 0;
-pub const __GLIBC_USE_DEPRECATED_GETS: u32 = 0;
-pub const __GLIBC_USE_DEPRECATED_SCANF: u32 = 0;
-pub const __STDC_IEC_559__: u32 = 1;
-pub const __STDC_IEC_60559_BFP__: u32 = 201404;
-pub const __STDC_IEC_559_COMPLEX__: u32 = 1;
-pub const __STDC_IEC_60559_COMPLEX__: u32 = 201404;
-pub const __STDC_ISO_10646__: u32 = 201706;
-pub const __GNU_LIBRARY__: u32 = 6;
-pub const __GLIBC__: u32 = 2;
-pub const __GLIBC_MINOR__: u32 = 35;
-pub const __glibc_c99_flexarr_available: u32 = 1;
-pub const __LDOUBLE_REDIRECTS_TO_FLOAT128_ABI: u32 = 0;
-pub const __GLIBC_USE_LIB_EXT2: u32 = 0;
-pub const __GLIBC_USE_IEC_60559_BFP_EXT: u32 = 0;
-pub const __GLIBC_USE_IEC_60559_BFP_EXT_C2X: u32 = 0;
-pub const __GLIBC_USE_IEC_60559_EXT: u32 = 0;
-pub const __GLIBC_USE_IEC_60559_FUNCS_EXT: u32 = 0;
-pub const __GLIBC_USE_IEC_60559_FUNCS_EXT_C2X: u32 = 0;
-pub const __GLIBC_USE_IEC_60559_TYPES_EXT: u32 = 0;
-pub const __GNUC_VA_LIST: u32 = 1;
-pub const __OFF_T_MATCHES_OFF64_T: u32 = 1;
-pub const __INO_T_MATCHES_INO64_T: u32 = 1;
-pub const __RLIM_T_MATCHES_RLIM64_T: u32 = 1;
-pub const __STATFS_MATCHES_STATFS64: u32 = 1;
-pub const __KERNEL_OLD_TIMEVAL_MATCHES_TIMEVAL64: u32 = 1;
-pub const __FD_SETSIZE: u32 = 1024;
-pub const _BITS_TIME64_H: u32 = 1;
-pub const _____fpos_t_defined: u32 = 1;
-pub const ____mbstate_t_defined: u32 = 1;
-pub const _____fpos64_t_defined: u32 = 1;
-pub const ____FILE_defined: u32 = 1;
-pub const __FILE_defined: u32 = 1;
-pub const __struct_FILE_defined: u32 = 1;
-pub const _IO_EOF_SEEN: u32 = 16;
-pub const _IO_ERR_SEEN: u32 = 32;
-pub const _IO_USER_LOCK: u32 = 32768;
-pub const _IOFBF: u32 = 0;
-pub const _IOLBF: u32 = 1;
-pub const _IONBF: u32 = 2;
-pub const BUFSIZ: u32 = 8192;
-pub const EOF: i32 = -1;
-pub const SEEK_SET: u32 = 0;
-pub const SEEK_CUR: u32 = 1;
-pub const SEEK_END: u32 = 2;
-#[allow(unsafe_code)]
-pub const P_tmpdir: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/tmp\0") };
-pub const L_tmpnam: u32 = 20;
-pub const TMP_MAX: u32 = 238328;
-pub const FILENAME_MAX: u32 = 4096;
-pub const L_ctermid: u32 = 9;
-pub const FOPEN_MAX: u32 = 16;
-pub const WNOHANG: u32 = 1;
-pub const WUNTRACED: u32 = 2;
-pub const WSTOPPED: u32 = 2;
-pub const WEXITED: u32 = 4;
-pub const WCONTINUED: u32 = 8;
-pub const WNOWAIT: u32 = 16777216;
-pub const __WNOTHREAD: u32 = 536870912;
-pub const __WALL: u32 = 1073741824;
-pub const __WCLONE: u32 = 2147483648;
-pub const __W_CONTINUED: u32 = 65535;
-pub const __WCOREFLAG: u32 = 128;
-pub const __ldiv_t_defined: u32 = 1;
-pub const __lldiv_t_defined: u32 = 1;
-pub const RAND_MAX: u32 = 2147483647;
-pub const EXIT_FAILURE: u32 = 1;
-pub const EXIT_SUCCESS: u32 = 0;
-pub const __clock_t_defined: u32 = 1;
-pub const __clockid_t_defined: u32 = 1;
-pub const __time_t_defined: u32 = 1;
-pub const __timer_t_defined: u32 = 1;
-pub const __BIT_TYPES_DEFINED__: u32 = 1;
-pub const __LITTLE_ENDIAN: u32 = 1234;
-pub const __BIG_ENDIAN: u32 = 4321;
-pub const __PDP_ENDIAN: u32 = 3412;
-pub const __BYTE_ORDER: u32 = 1234;
-pub const __FLOAT_WORD_ORDER: u32 = 1234;
-pub const LITTLE_ENDIAN: u32 = 1234;
-pub const BIG_ENDIAN: u32 = 4321;
-pub const PDP_ENDIAN: u32 = 3412;
-pub const BYTE_ORDER: u32 = 1234;
-pub const __sigset_t_defined: u32 = 1;
-pub const __timeval_defined: u32 = 1;
-pub const _STRUCT_TIMESPEC: u32 = 1;
-pub const FD_SETSIZE: u32 = 1024;
-pub const __SIZEOF_PTHREAD_MUTEX_T: u32 = 40;
-pub const __SIZEOF_PTHREAD_ATTR_T: u32 = 56;
-pub const __SIZEOF_PTHREAD_RWLOCK_T: u32 = 56;
-pub const __SIZEOF_PTHREAD_BARRIER_T: u32 = 32;
-pub const __SIZEOF_PTHREAD_MUTEXATTR_T: u32 = 4;
-pub const __SIZEOF_PTHREAD_COND_T: u32 = 48;
-pub const __SIZEOF_PTHREAD_CONDATTR_T: u32 = 4;
-pub const __SIZEOF_PTHREAD_RWLOCKATTR_T: u32 = 8;
-pub const __SIZEOF_PTHREAD_BARRIERATTR_T: u32 = 4;
-pub const __PTHREAD_MUTEX_HAVE_PREV: u32 = 1;
-pub const INT8_MIN: i32 = -128;
-pub const INT16_MIN: i32 = -32768;
-pub const INT32_MIN: i32 = -2147483648;
-pub const INT8_MAX: u32 = 127;
-pub const INT16_MAX: u32 = 32767;
-pub const INT32_MAX: u32 = 2147483647;
-pub const UINT8_MAX: u32 = 255;
-pub const UINT16_MAX: u32 = 65535;
-pub const UINT32_MAX: u32 = 4294967295;
-pub const INT_LEAST8_MIN: i32 = -128;
-pub const INT_LEAST16_MIN: i32 = -32768;
-pub const INT_LEAST32_MIN: i32 = -2147483648;
-pub const INT_LEAST8_MAX: u32 = 127;
-pub const INT_LEAST16_MAX: u32 = 32767;
-pub const INT_LEAST32_MAX: u32 = 2147483647;
-pub const UINT_LEAST8_MAX: u32 = 255;
-pub const UINT_LEAST16_MAX: u32 = 65535;
-pub const UINT_LEAST32_MAX: u32 = 4294967295;
-pub const INT_FAST8_MIN: i32 = -128;
-pub const INT_FAST16_MIN: i64 = -9223372036854775808;
-pub const INT_FAST32_MIN: i64 = -9223372036854775808;
-pub const INT_FAST8_MAX: u32 = 127;
-pub const INT_FAST16_MAX: u64 = 9223372036854775807;
-pub const INT_FAST32_MAX: u64 = 9223372036854775807;
-pub const UINT_FAST8_MAX: u32 = 255;
-pub const UINT_FAST16_MAX: i32 = -1;
-pub const UINT_FAST32_MAX: i32 = -1;
-pub const INTPTR_MIN: i64 = -9223372036854775808;
-pub const INTPTR_MAX: u64 = 9223372036854775807;
-pub const UINTPTR_MAX: i32 = -1;
-pub const PTRDIFF_MIN: i64 = -9223372036854775808;
-pub const PTRDIFF_MAX: u64 = 9223372036854775807;
 pub const SIG_ATOMIC_MIN: i32 = -2147483648;
 pub const SIG_ATOMIC_MAX: u32 = 2147483647;
-pub const SIZE_MAX: i32 = -1;
-pub const WINT_MIN: u32 = 0;
-pub const WINT_MAX: u32 = 4294967295;
-pub const EPERM: u32 = 1;
-pub const ENOENT: u32 = 2;
-pub const ESRCH: u32 = 3;
-pub const EINTR: u32 = 4;
-pub const EIO: u32 = 5;
-pub const ENXIO: u32 = 6;
-pub const E2BIG: u32 = 7;
-pub const ENOEXEC: u32 = 8;
-pub const EBADF: u32 = 9;
-pub const ECHILD: u32 = 10;
-pub const EAGAIN: u32 = 11;
-pub const ENOMEM: u32 = 12;
-pub const EACCES: u32 = 13;
-pub const EFAULT: u32 = 14;
-pub const ENOTBLK: u32 = 15;
-pub const EBUSY: u32 = 16;
-pub const EEXIST: u32 = 17;
-pub const EXDEV: u32 = 18;
-pub const ENODEV: u32 = 19;
-pub const ENOTDIR: u32 = 20;
-pub const EISDIR: u32 = 21;
-pub const EINVAL: u32 = 22;
-pub const ENFILE: u32 = 23;
-pub const EMFILE: u32 = 24;
-pub const ENOTTY: u32 = 25;
-pub const ETXTBSY: u32 = 26;
-pub const EFBIG: u32 = 27;
-pub const ENOSPC: u32 = 28;
-pub const ESPIPE: u32 = 29;
-pub const EROFS: u32 = 30;
-pub const EMLINK: u32 = 31;
-pub const EPIPE: u32 = 32;
-pub const EDOM: u32 = 33;
-pub const ERANGE: u32 = 34;
-pub const EDEADLK: u32 = 35;
-pub const ENAMETOOLONG: u32 = 36;
-pub const ENOLCK: u32 = 37;
-pub const ENOSYS: u32 = 38;
-pub const ENOTEMPTY: u32 = 39;
-pub const ELOOP: u32 = 40;
-pub const EWOULDBLOCK: u32 = 11;
-pub const ENOMSG: u32 = 42;
-pub const EIDRM: u32 = 43;
-pub const ECHRNG: u32 = 44;
-pub const EL2NSYNC: u32 = 45;
-pub const EL3HLT: u32 = 46;
-pub const EL3RST: u32 = 47;
-pub const ELNRNG: u32 = 48;
-pub const EUNATCH: u32 = 49;
-pub const ENOCSI: u32 = 50;
-pub const EL2HLT: u32 = 51;
-pub const EBADE: u32 = 52;
-pub const EBADR: u32 = 53;
-pub const EXFULL: u32 = 54;
-pub const ENOANO: u32 = 55;
-pub const EBADRQC: u32 = 56;
-pub const EBADSLT: u32 = 57;
-pub const EDEADLOCK: u32 = 35;
-pub const EBFONT: u32 = 59;
-pub const ENOSTR: u32 = 60;
-pub const ENODATA: u32 = 61;
-pub const ETIME: u32 = 62;
-pub const ENOSR: u32 = 63;
-pub const ENONET: u32 = 64;
-pub const ENOPKG: u32 = 65;
-pub const EREMOTE: u32 = 66;
-pub const ENOLINK: u32 = 67;
-pub const EADV: u32 = 68;
-pub const ESRMNT: u32 = 69;
-pub const ECOMM: u32 = 70;
-pub const EPROTO: u32 = 71;
-pub const EMULTIHOP: u32 = 72;
-pub const EDOTDOT: u32 = 73;
-pub const EBADMSG: u32 = 74;
-pub const EOVERFLOW: u32 = 75;
-pub const ENOTUNIQ: u32 = 76;
-pub const EBADFD: u32 = 77;
-pub const EREMCHG: u32 = 78;
-pub const ELIBACC: u32 = 79;
-pub const ELIBBAD: u32 = 80;
-pub const ELIBSCN: u32 = 81;
-pub const ELIBMAX: u32 = 82;
-pub const ELIBEXEC: u32 = 83;
-pub const EILSEQ: u32 = 84;
-pub const ERESTART: u32 = 85;
-pub const ESTRPIPE: u32 = 86;
-pub const EUSERS: u32 = 87;
-pub const ENOTSOCK: u32 = 88;
-pub const EDESTADDRREQ: u32 = 89;
-pub const EMSGSIZE: u32 = 90;
-pub const EPROTOTYPE: u32 = 91;
-pub const ENOPROTOOPT: u32 = 92;
-pub const EPROTONOSUPPORT: u32 = 93;
-pub const ESOCKTNOSUPPORT: u32 = 94;
-pub const EOPNOTSUPP: u32 = 95;
-pub const EPFNOSUPPORT: u32 = 96;
-pub const EAFNOSUPPORT: u32 = 97;
-pub const EADDRINUSE: u32 = 98;
-pub const EADDRNOTAVAIL: u32 = 99;
-pub const ENETDOWN: u32 = 100;
-pub const ENETUNREACH: u32 = 101;
-pub const ENETRESET: u32 = 102;
-pub const ECONNABORTED: u32 = 103;
-pub const ECONNRESET: u32 = 104;
-pub const ENOBUFS: u32 = 105;
-pub const EISCONN: u32 = 106;
-pub const ENOTCONN: u32 = 107;
-pub const ESHUTDOWN: u32 = 108;
-pub const ETOOMANYREFS: u32 = 109;
-pub const ETIMEDOUT: u32 = 110;
-pub const ECONNREFUSED: u32 = 111;
-pub const EHOSTDOWN: u32 = 112;
-pub const EHOSTUNREACH: u32 = 113;
-pub const EALREADY: u32 = 114;
-pub const EINPROGRESS: u32 = 115;
-pub const ESTALE: u32 = 116;
-pub const EUCLEAN: u32 = 117;
-pub const ENOTNAM: u32 = 118;
-pub const ENAVAIL: u32 = 119;
-pub const EISNAM: u32 = 120;
-pub const EREMOTEIO: u32 = 121;
-pub const EDQUOT: u32 = 122;
-pub const ENOMEDIUM: u32 = 123;
-pub const EMEDIUMTYPE: u32 = 124;
-pub const ECANCELED: u32 = 125;
-pub const ENOKEY: u32 = 126;
-pub const EKEYEXPIRED: u32 = 127;
-pub const EKEYREVOKED: u32 = 128;
-pub const EKEYREJECTED: u32 = 129;
-pub const EOWNERDEAD: u32 = 130;
-pub const ENOTRECOVERABLE: u32 = 131;
-pub const ERFKILL: u32 = 132;
-pub const EHWPOISON: u32 = 133;
-pub const ENOTSUP: u32 = 95;
-pub const __LC_CTYPE: u32 = 0;
-pub const __LC_NUMERIC: u32 = 1;
-pub const __LC_TIME: u32 = 2;
-pub const __LC_COLLATE: u32 = 3;
-pub const __LC_MONETARY: u32 = 4;
-pub const __LC_MESSAGES: u32 = 5;
-pub const __LC_ALL: u32 = 6;
-pub const __LC_PAPER: u32 = 7;
-pub const __LC_NAME: u32 = 8;
-pub const __LC_ADDRESS: u32 = 9;
-pub const __LC_TELEPHONE: u32 = 10;
-pub const __LC_MEASUREMENT: u32 = 11;
-pub const __LC_IDENTIFICATION: u32 = 12;
-pub const LC_CTYPE: u32 = 0;
-pub const LC_NUMERIC: u32 = 1;
-pub const LC_TIME: u32 = 2;
-pub const LC_COLLATE: u32 = 3;
-pub const LC_MONETARY: u32 = 4;
-pub const LC_MESSAGES: u32 = 5;
-pub const LC_ALL: u32 = 6;
-pub const LC_PAPER: u32 = 7;
-pub const LC_NAME: u32 = 8;
-pub const LC_ADDRESS: u32 = 9;
-pub const LC_TELEPHONE: u32 = 10;
-pub const LC_MEASUREMENT: u32 = 11;
-pub const LC_IDENTIFICATION: u32 = 12;
-pub const LC_CTYPE_MASK: u32 = 1;
-pub const LC_NUMERIC_MASK: u32 = 2;
-pub const LC_TIME_MASK: u32 = 4;
-pub const LC_COLLATE_MASK: u32 = 8;
-pub const LC_MONETARY_MASK: u32 = 16;
-pub const LC_MESSAGES_MASK: u32 = 32;
-pub const LC_PAPER_MASK: u32 = 128;
-pub const LC_NAME_MASK: u32 = 256;
-pub const LC_ADDRESS_MASK: u32 = 512;
-pub const LC_TELEPHONE_MASK: u32 = 1024;
-pub const LC_MEASUREMENT_MASK: u32 = 2048;
-pub const LC_IDENTIFICATION_MASK: u32 = 4096;
-pub const LC_ALL_MASK: u32 = 8127;
-pub const __bool_true_false_are_defined: u32 = 1;
-pub const true_: u32 = 1;
-pub const false_: u32 = 0;
-#[allow(unsafe_code)]
-pub const INT64_FORMAT: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"%ld\0") };
-#[allow(unsafe_code)]
-pub const UINT64_FORMAT: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"%lu\0") };
+pub const SIG_ATOMIC_WIDTH: u32 = 32;
+pub const INT64_FORMAT: &::core::ffi::CStr = c"%ld";
+pub const UINT64_FORMAT: &::core::ffi::CStr = c"%lu";
 pub const PG_INT8_MIN: i32 = -128;
 pub const PG_INT8_MAX: u32 = 127;
 pub const PG_UINT8_MAX: u32 = 255;
@@ -567,39 +251,16 @@ pub const STATUS_OK: u32 = 0;
 pub const STATUS_ERROR: i32 = -1;
 pub const STATUS_EOF: i32 = -2;
 pub const PG_BINARY: u32 = 0;
-#[allow(unsafe_code)]
-pub const PG_BINARY_A: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"a\0") };
-#[allow(unsafe_code)]
-pub const PG_BINARY_R: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"r\0") };
-#[allow(unsafe_code)]
-pub const PG_BINARY_W: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"w\0") };
+pub const PG_BINARY_A: &::core::ffi::CStr = c"a";
+pub const PG_BINARY_R: &::core::ffi::CStr = c"r";
+pub const PG_BINARY_W: &::core::ffi::CStr = c"w";
 pub const PGINVALID_SOCKET: i32 = -1;
-#[allow(unsafe_code)]
-pub const PG_BACKEND_VERSIONSTR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"postgres (PostgreSQL) 17.0\n\0") };
-#[allow(unsafe_code)]
-pub const EXE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"\0") };
-#[allow(unsafe_code)]
-pub const DEVNULL: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/dev/null\0") };
+pub const PG_BACKEND_VERSIONSTR: &::core::ffi::CStr = c"postgres (PostgreSQL) 17.5\n";
+pub const EXE: &::core::ffi::CStr = c"";
+pub const DEVNULL: &::core::ffi::CStr = c"/dev/null";
 pub const USE_REPL_SNPRINTF: u32 = 1;
 pub const PG_STRERROR_R_BUFLEN: u32 = 256;
 pub const PG_IOLBF: u32 = 1;
-pub const __FP_LOGB0_IS_MIN: u32 = 1;
-pub const __FP_LOGBNAN_IS_MIN: u32 = 1;
-pub const FP_ILOGB0: i32 = -2147483648;
-pub const FP_ILOGBNAN: i32 = -2147483648;
-pub const __MATH_DECLARING_DOUBLE: u32 = 1;
-pub const __MATH_DECLARING_FLOATN: u32 = 0;
-pub const __MATH_DECLARE_LDOUBLE: u32 = 1;
-pub const MATH_ERRNO: u32 = 1;
-pub const MATH_ERREXCEPT: u32 = 2;
-pub const math_errhandling: u32 = 3;
-pub const __jmp_buf_tag_defined: u32 = 1;
 pub const DEBUG5: u32 = 10;
 pub const DEBUG4: u32 = 11;
 pub const DEBUG3: u32 = 12;
@@ -613,7 +274,6 @@ pub const NOTICE: u32 = 18;
 pub const WARNING: u32 = 19;
 pub const PGWARNING: u32 = 19;
 pub const WARNING_CLIENT_ONLY: u32 = 20;
-pub const ERROR: u32 = 21;
 pub const PGERROR: u32 = 21;
 pub const FATAL: u32 = 22;
 pub const PANIC: u32 = 23;
@@ -675,129 +335,6 @@ pub const LP_DEAD: u32 = 3;
 pub const SpecTokenOffsetNumber: u32 = 65534;
 pub const MovedPartitionsOffsetNumber: u32 = 65533;
 pub const FIELDNO_HEAPTUPLEDATA_DATA: u32 = 3;
-pub const __O_LARGEFILE: u32 = 0;
-pub const F_GETLK64: u32 = 5;
-pub const F_SETLK64: u32 = 6;
-pub const F_SETLKW64: u32 = 7;
-pub const O_ACCMODE: u32 = 3;
-pub const O_RDONLY: u32 = 0;
-pub const O_WRONLY: u32 = 1;
-pub const O_RDWR: u32 = 2;
-pub const O_CREAT: u32 = 64;
-pub const O_EXCL: u32 = 128;
-pub const O_NOCTTY: u32 = 256;
-pub const O_TRUNC: u32 = 512;
-pub const O_APPEND: u32 = 1024;
-pub const O_NONBLOCK: u32 = 2048;
-pub const O_NDELAY: u32 = 2048;
-pub const O_SYNC: u32 = 1052672;
-pub const O_FSYNC: u32 = 1052672;
-pub const O_ASYNC: u32 = 8192;
-pub const __O_DIRECTORY: u32 = 65536;
-pub const __O_NOFOLLOW: u32 = 131072;
-pub const __O_CLOEXEC: u32 = 524288;
-pub const __O_DIRECT: u32 = 16384;
-pub const __O_NOATIME: u32 = 262144;
-pub const __O_PATH: u32 = 2097152;
-pub const __O_DSYNC: u32 = 4096;
-pub const __O_TMPFILE: u32 = 4259840;
-pub const F_GETLK: u32 = 5;
-pub const F_SETLK: u32 = 6;
-pub const F_SETLKW: u32 = 7;
-pub const O_DIRECTORY: u32 = 65536;
-pub const O_NOFOLLOW: u32 = 131072;
-pub const O_CLOEXEC: u32 = 524288;
-pub const O_DSYNC: u32 = 4096;
-pub const O_RSYNC: u32 = 1052672;
-pub const F_DUPFD: u32 = 0;
-pub const F_GETFD: u32 = 1;
-pub const F_SETFD: u32 = 2;
-pub const F_GETFL: u32 = 3;
-pub const F_SETFL: u32 = 4;
-pub const __F_SETOWN: u32 = 8;
-pub const __F_GETOWN: u32 = 9;
-pub const F_SETOWN: u32 = 8;
-pub const F_GETOWN: u32 = 9;
-pub const __F_SETSIG: u32 = 10;
-pub const __F_GETSIG: u32 = 11;
-pub const __F_SETOWN_EX: u32 = 15;
-pub const __F_GETOWN_EX: u32 = 16;
-pub const F_DUPFD_CLOEXEC: u32 = 1030;
-pub const FD_CLOEXEC: u32 = 1;
-pub const F_RDLCK: u32 = 0;
-pub const F_WRLCK: u32 = 1;
-pub const F_UNLCK: u32 = 2;
-pub const F_EXLCK: u32 = 4;
-pub const F_SHLCK: u32 = 8;
-pub const LOCK_SH: u32 = 1;
-pub const LOCK_EX: u32 = 2;
-pub const LOCK_NB: u32 = 4;
-pub const LOCK_UN: u32 = 8;
-pub const FAPPEND: u32 = 1024;
-pub const FFSYNC: u32 = 1052672;
-pub const FASYNC: u32 = 8192;
-pub const FNONBLOCK: u32 = 2048;
-pub const FNDELAY: u32 = 2048;
-pub const __POSIX_FADV_DONTNEED: u32 = 4;
-pub const __POSIX_FADV_NOREUSE: u32 = 5;
-pub const POSIX_FADV_NORMAL: u32 = 0;
-pub const POSIX_FADV_RANDOM: u32 = 1;
-pub const POSIX_FADV_SEQUENTIAL: u32 = 2;
-pub const POSIX_FADV_WILLNEED: u32 = 3;
-pub const POSIX_FADV_DONTNEED: u32 = 4;
-pub const POSIX_FADV_NOREUSE: u32 = 5;
-pub const AT_FDCWD: i32 = -100;
-pub const AT_SYMLINK_NOFOLLOW: u32 = 256;
-pub const AT_REMOVEDIR: u32 = 512;
-pub const AT_SYMLINK_FOLLOW: u32 = 1024;
-pub const AT_EACCESS: u32 = 512;
-pub const __S_IFMT: u32 = 61440;
-pub const __S_IFDIR: u32 = 16384;
-pub const __S_IFCHR: u32 = 8192;
-pub const __S_IFBLK: u32 = 24576;
-pub const __S_IFREG: u32 = 32768;
-pub const __S_IFIFO: u32 = 4096;
-pub const __S_IFLNK: u32 = 40960;
-pub const __S_IFSOCK: u32 = 49152;
-pub const __S_ISUID: u32 = 2048;
-pub const __S_ISGID: u32 = 1024;
-pub const __S_ISVTX: u32 = 512;
-pub const __S_IREAD: u32 = 256;
-pub const __S_IWRITE: u32 = 128;
-pub const __S_IEXEC: u32 = 64;
-pub const UTIME_NOW: u32 = 1073741823;
-pub const UTIME_OMIT: u32 = 1073741822;
-pub const S_IFMT: u32 = 61440;
-pub const S_IFDIR: u32 = 16384;
-pub const S_IFCHR: u32 = 8192;
-pub const S_IFBLK: u32 = 24576;
-pub const S_IFREG: u32 = 32768;
-pub const S_IFIFO: u32 = 4096;
-pub const S_IFLNK: u32 = 40960;
-pub const S_IFSOCK: u32 = 49152;
-pub const S_ISUID: u32 = 2048;
-pub const S_ISGID: u32 = 1024;
-pub const S_ISVTX: u32 = 512;
-pub const S_IRUSR: u32 = 256;
-pub const S_IWUSR: u32 = 128;
-pub const S_IXUSR: u32 = 64;
-pub const S_IRWXU: u32 = 448;
-pub const S_IRGRP: u32 = 32;
-pub const S_IWGRP: u32 = 16;
-pub const S_IXGRP: u32 = 8;
-pub const S_IRWXG: u32 = 56;
-pub const S_IROTH: u32 = 4;
-pub const S_IWOTH: u32 = 2;
-pub const S_IXOTH: u32 = 1;
-pub const S_IRWXO: u32 = 7;
-pub const R_OK: u32 = 4;
-pub const W_OK: u32 = 2;
-pub const X_OK: u32 = 1;
-pub const F_OK: u32 = 0;
-pub const F_ULOCK: u32 = 0;
-pub const F_LOCK: u32 = 1;
-pub const F_TLOCK: u32 = 2;
-pub const F_TEST: u32 = 3;
 pub const InvalidXLogRecPtr: u32 = 0;
 pub const FirstGenbkiObjectId: u32 = 10000;
 pub const FirstUnpinnedObjectId: u32 = 12000;
@@ -1130,27 +667,10 @@ pub const FIELDNO_HEAPTUPLETABLESLOT_OFF: u32 = 2;
 pub const FIELDNO_MINIMALTUPLETABLESLOT_TUPLE: u32 = 1;
 pub const FIELDNO_MINIMALTUPLETABLESLOT_OFF: u32 = 4;
 pub const BITS_PER_BITMAPWORD: u32 = 64;
-pub const CLOCK_REALTIME: u32 = 0;
-pub const CLOCK_MONOTONIC: u32 = 1;
-pub const CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
-pub const CLOCK_THREAD_CPUTIME_ID: u32 = 3;
-pub const CLOCK_MONOTONIC_RAW: u32 = 4;
-pub const CLOCK_REALTIME_COARSE: u32 = 5;
-pub const CLOCK_MONOTONIC_COARSE: u32 = 6;
-pub const CLOCK_BOOTTIME: u32 = 7;
-pub const CLOCK_REALTIME_ALARM: u32 = 8;
-pub const CLOCK_BOOTTIME_ALARM: u32 = 9;
-pub const CLOCK_TAI: u32 = 11;
-pub const TIMER_ABSTIME: u32 = 1;
-pub const __struct_tm_defined: u32 = 1;
-pub const __itimerspec_defined: u32 = 1;
-pub const TIME_UTC: u32 = 1;
 pub const PG_INSTR_CLOCK: u32 = 1;
 pub const FIELDNO_FUNCTIONCALLINFODATA_ISNULL: u32 = 4;
 pub const FIELDNO_FUNCTIONCALLINFODATA_ARGS: u32 = 6;
-#[allow(unsafe_code)]
-pub const PG_MAGIC_FUNCTION_NAME_STRING: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"Pg_magic_func\0") };
+pub const PG_MAGIC_FUNCTION_NAME_STRING: &::core::ffi::CStr = c"Pg_magic_func";
 pub const AGG_CONTEXT_AGGREGATE: u32 = 1;
 pub const AGG_CONTEXT_WINDOW: u32 = 2;
 pub const PARAM_FLAG_CONST: u32 = 1;
@@ -1202,100 +722,16 @@ pub const INDEX_VAR: i32 = -3;
 pub const ROWID_VAR: i32 = -4;
 pub const PRS2_OLD_VARNO: u32 = 1;
 pub const PRS2_NEW_VARNO: u32 = 2;
-pub const _LIBC_LIMITS_H_: u32 = 1;
-pub const MB_LEN_MAX: u32 = 16;
-pub const _BITS_POSIX1_LIM_H: u32 = 1;
-pub const _POSIX_AIO_LISTIO_MAX: u32 = 2;
-pub const _POSIX_AIO_MAX: u32 = 1;
-pub const _POSIX_ARG_MAX: u32 = 4096;
-pub const _POSIX_CHILD_MAX: u32 = 25;
-pub const _POSIX_DELAYTIMER_MAX: u32 = 32;
-pub const _POSIX_HOST_NAME_MAX: u32 = 255;
-pub const _POSIX_LINK_MAX: u32 = 8;
-pub const _POSIX_LOGIN_NAME_MAX: u32 = 9;
-pub const _POSIX_MAX_CANON: u32 = 255;
-pub const _POSIX_MAX_INPUT: u32 = 255;
-pub const _POSIX_MQ_OPEN_MAX: u32 = 8;
-pub const _POSIX_MQ_PRIO_MAX: u32 = 32;
-pub const _POSIX_NAME_MAX: u32 = 14;
-pub const _POSIX_NGROUPS_MAX: u32 = 8;
-pub const _POSIX_OPEN_MAX: u32 = 20;
-pub const _POSIX_PATH_MAX: u32 = 256;
-pub const _POSIX_PIPE_BUF: u32 = 512;
-pub const _POSIX_RE_DUP_MAX: u32 = 255;
-pub const _POSIX_RTSIG_MAX: u32 = 8;
-pub const _POSIX_SEM_NSEMS_MAX: u32 = 256;
-pub const _POSIX_SEM_VALUE_MAX: u32 = 32767;
-pub const _POSIX_SIGQUEUE_MAX: u32 = 32;
-pub const _POSIX_SSIZE_MAX: u32 = 32767;
-pub const _POSIX_STREAM_MAX: u32 = 8;
-pub const _POSIX_SYMLINK_MAX: u32 = 255;
-pub const _POSIX_SYMLOOP_MAX: u32 = 8;
-pub const _POSIX_TIMER_MAX: u32 = 32;
-pub const _POSIX_TTY_NAME_MAX: u32 = 9;
-pub const _POSIX_TZNAME_MAX: u32 = 6;
-pub const _POSIX_CLOCKRES_MIN: u32 = 20000000;
-pub const NR_OPEN: u32 = 1024;
-pub const NGROUPS_MAX: u32 = 65536;
-pub const ARG_MAX: u32 = 131072;
-pub const LINK_MAX: u32 = 127;
-pub const MAX_CANON: u32 = 255;
-pub const MAX_INPUT: u32 = 255;
-pub const NAME_MAX: u32 = 255;
-pub const PATH_MAX: u32 = 4096;
-pub const PIPE_BUF: u32 = 4096;
-pub const XATTR_NAME_MAX: u32 = 255;
-pub const XATTR_SIZE_MAX: u32 = 65536;
-pub const XATTR_LIST_MAX: u32 = 65536;
-pub const RTSIG_MAX: u32 = 32;
-pub const _POSIX_THREAD_KEYS_MAX: u32 = 128;
-pub const PTHREAD_KEYS_MAX: u32 = 1024;
-pub const _POSIX_THREAD_DESTRUCTOR_ITERATIONS: u32 = 4;
-pub const PTHREAD_DESTRUCTOR_ITERATIONS: u32 = 4;
-pub const _POSIX_THREAD_THREADS_MAX: u32 = 64;
-pub const AIO_PRIO_DELTA_MAX: u32 = 20;
-pub const PTHREAD_STACK_MIN: u32 = 16384;
-pub const DELAYTIMER_MAX: u32 = 2147483647;
-pub const TTY_NAME_MAX: u32 = 32;
-pub const LOGIN_NAME_MAX: u32 = 256;
-pub const HOST_NAME_MAX: u32 = 64;
-pub const MQ_PRIO_MAX: u32 = 32768;
-pub const SEM_VALUE_MAX: u32 = 2147483647;
-pub const _BITS_POSIX2_LIM_H: u32 = 1;
-pub const _POSIX2_BC_BASE_MAX: u32 = 99;
-pub const _POSIX2_BC_DIM_MAX: u32 = 2048;
-pub const _POSIX2_BC_SCALE_MAX: u32 = 99;
-pub const _POSIX2_BC_STRING_MAX: u32 = 1000;
-pub const _POSIX2_COLL_WEIGHTS_MAX: u32 = 2;
-pub const _POSIX2_EXPR_NEST_MAX: u32 = 32;
-pub const _POSIX2_LINE_MAX: u32 = 2048;
-pub const _POSIX2_RE_DUP_MAX: u32 = 255;
-pub const _POSIX2_CHARCLASS_NAME_MAX: u32 = 14;
-pub const BC_BASE_MAX: u32 = 99;
-pub const BC_DIM_MAX: u32 = 2048;
-pub const BC_SCALE_MAX: u32 = 99;
-pub const BC_STRING_MAX: u32 = 1000;
-pub const COLL_WEIGHTS_MAX: u32 = 255;
-pub const EXPR_NEST_MAX: u32 = 32;
-pub const LINE_MAX: u32 = 2048;
-pub const CHARCLASS_NAME_MAX: u32 = 2048;
-pub const RE_DUP_MAX: u32 = 32767;
 pub const DSM_IMPL_POSIX: u32 = 1;
 pub const DSM_IMPL_SYSV: u32 = 2;
 pub const DSM_IMPL_WINDOWS: u32 = 3;
 pub const DSM_IMPL_MMAP: u32 = 4;
 pub const DEFAULT_DYNAMIC_SHARED_MEMORY_TYPE: u32 = 1;
-#[allow(unsafe_code)]
-pub const PG_DYNSHMEM_DIR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"pg_dynshmem\0") };
-#[allow(unsafe_code)]
-pub const PG_DYNSHMEM_MMAP_FILE_PREFIX: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"mmap.\0") };
+pub const PG_DYNSHMEM_DIR: &::core::ffi::CStr = c"pg_dynshmem";
+pub const PG_DYNSHMEM_MMAP_FILE_PREFIX: &::core::ffi::CStr = c"mmap.";
 pub const DSM_CREATE_NULL_IF_MAXSEGMENTS: u32 = 1;
 pub const SIZEOF_DSA_POINTER: u32 = 8;
-#[allow(unsafe_code)]
-pub const DSA_POINTER_FORMAT: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"%016lx\0") };
+pub const DSA_POINTER_FORMAT: &::core::ffi::CStr = c"%016lx";
 pub const DSA_ALLOC_HUGE: u32 = 1;
 pub const DSA_ALLOC_NO_OOM: u32 = 2;
 pub const DSA_ALLOC_ZERO: u32 = 4;
@@ -1317,125 +753,10 @@ pub const HASH_SHARED_MEM: u32 = 2048;
 pub const HASH_ATTACH: u32 = 4096;
 pub const HASH_FIXED_SIZE: u32 = 8192;
 pub const NO_MAX_DSIZE: i32 = -1;
-pub const __iovec_defined: u32 = 1;
-pub const __IOV_MAX: u32 = 1024;
-pub const UIO_MAXIOV: u32 = 1024;
-pub const _POSIX_VERSION: u32 = 200809;
-pub const __POSIX2_THIS_VERSION: u32 = 200809;
-pub const _POSIX2_VERSION: u32 = 200809;
-pub const _POSIX2_C_VERSION: u32 = 200809;
-pub const _POSIX2_C_BIND: u32 = 200809;
-pub const _POSIX2_C_DEV: u32 = 200809;
-pub const _POSIX2_SW_DEV: u32 = 200809;
-pub const _POSIX2_LOCALEDEF: u32 = 200809;
-pub const _XOPEN_VERSION: u32 = 700;
-pub const _XOPEN_XCU_VERSION: u32 = 4;
-pub const _XOPEN_XPG2: u32 = 1;
-pub const _XOPEN_XPG3: u32 = 1;
-pub const _XOPEN_XPG4: u32 = 1;
-pub const _XOPEN_UNIX: u32 = 1;
-pub const _XOPEN_ENH_I18N: u32 = 1;
-pub const _XOPEN_LEGACY: u32 = 1;
-pub const _POSIX_JOB_CONTROL: u32 = 1;
-pub const _POSIX_SAVED_IDS: u32 = 1;
-pub const _POSIX_PRIORITY_SCHEDULING: u32 = 200809;
-pub const _POSIX_SYNCHRONIZED_IO: u32 = 200809;
-pub const _POSIX_FSYNC: u32 = 200809;
-pub const _POSIX_MAPPED_FILES: u32 = 200809;
-pub const _POSIX_MEMLOCK: u32 = 200809;
-pub const _POSIX_MEMLOCK_RANGE: u32 = 200809;
-pub const _POSIX_MEMORY_PROTECTION: u32 = 200809;
-pub const _POSIX_CHOWN_RESTRICTED: u32 = 0;
-pub const _POSIX_VDISABLE: u8 = 0u8;
-pub const _POSIX_NO_TRUNC: u32 = 1;
-pub const _XOPEN_REALTIME: u32 = 1;
-pub const _XOPEN_REALTIME_THREADS: u32 = 1;
-pub const _XOPEN_SHM: u32 = 1;
-pub const _POSIX_THREADS: u32 = 200809;
-pub const _POSIX_REENTRANT_FUNCTIONS: u32 = 1;
-pub const _POSIX_THREAD_SAFE_FUNCTIONS: u32 = 200809;
-pub const _POSIX_THREAD_PRIORITY_SCHEDULING: u32 = 200809;
-pub const _POSIX_THREAD_ATTR_STACKSIZE: u32 = 200809;
-pub const _POSIX_THREAD_ATTR_STACKADDR: u32 = 200809;
-pub const _POSIX_THREAD_PRIO_INHERIT: u32 = 200809;
-pub const _POSIX_THREAD_PRIO_PROTECT: u32 = 200809;
-pub const _POSIX_THREAD_ROBUST_PRIO_INHERIT: u32 = 200809;
-pub const _POSIX_THREAD_ROBUST_PRIO_PROTECT: i32 = -1;
-pub const _POSIX_SEMAPHORES: u32 = 200809;
-pub const _POSIX_REALTIME_SIGNALS: u32 = 200809;
-pub const _POSIX_ASYNCHRONOUS_IO: u32 = 200809;
-pub const _POSIX_ASYNC_IO: u32 = 1;
-pub const _LFS_ASYNCHRONOUS_IO: u32 = 1;
-pub const _POSIX_PRIORITIZED_IO: u32 = 200809;
-pub const _LFS64_ASYNCHRONOUS_IO: u32 = 1;
-pub const _LFS_LARGEFILE: u32 = 1;
-pub const _LFS64_LARGEFILE: u32 = 1;
-pub const _LFS64_STDIO: u32 = 1;
-pub const _POSIX_SHARED_MEMORY_OBJECTS: u32 = 200809;
-pub const _POSIX_CPUTIME: u32 = 0;
-pub const _POSIX_THREAD_CPUTIME: u32 = 0;
-pub const _POSIX_REGEXP: u32 = 1;
-pub const _POSIX_READER_WRITER_LOCKS: u32 = 200809;
-pub const _POSIX_SHELL: u32 = 1;
-pub const _POSIX_TIMEOUTS: u32 = 200809;
-pub const _POSIX_SPIN_LOCKS: u32 = 200809;
-pub const _POSIX_SPAWN: u32 = 200809;
-pub const _POSIX_TIMERS: u32 = 200809;
-pub const _POSIX_BARRIERS: u32 = 200809;
-pub const _POSIX_MESSAGE_PASSING: u32 = 200809;
-pub const _POSIX_THREAD_PROCESS_SHARED: u32 = 200809;
-pub const _POSIX_MONOTONIC_CLOCK: u32 = 0;
-pub const _POSIX_CLOCK_SELECTION: u32 = 200809;
-pub const _POSIX_ADVISORY_INFO: u32 = 200809;
-pub const _POSIX_IPV6: u32 = 200809;
-pub const _POSIX_RAW_SOCKETS: u32 = 200809;
-pub const _POSIX2_CHAR_TERM: u32 = 200809;
-pub const _POSIX_SPORADIC_SERVER: i32 = -1;
-pub const _POSIX_THREAD_SPORADIC_SERVER: i32 = -1;
-pub const _POSIX_TRACE: i32 = -1;
-pub const _POSIX_TRACE_EVENT_FILTER: i32 = -1;
-pub const _POSIX_TRACE_INHERIT: i32 = -1;
-pub const _POSIX_TRACE_LOG: i32 = -1;
-pub const _POSIX_TYPED_MEMORY_OBJECTS: i32 = -1;
-pub const _POSIX_V7_LPBIG_OFFBIG: i32 = -1;
-pub const _POSIX_V6_LPBIG_OFFBIG: i32 = -1;
-pub const _XBS5_LPBIG_OFFBIG: i32 = -1;
-pub const _POSIX_V7_LP64_OFF64: u32 = 1;
-pub const _POSIX_V6_LP64_OFF64: u32 = 1;
-pub const _XBS5_LP64_OFF64: u32 = 1;
-#[allow(unsafe_code)]
-pub const __ILP32_OFF32_CFLAGS: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"-m32\0") };
-#[allow(unsafe_code)]
-pub const __ILP32_OFF32_LDFLAGS: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"-m32\0") };
-#[allow(unsafe_code)]
-pub const __ILP32_OFFBIG_CFLAGS: &::core::ffi::CStr = unsafe {
-    ::core::ffi::CStr::from_bytes_with_nul_unchecked(
-        b"-m32 -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64\0",
-    )
-};
-#[allow(unsafe_code)]
-pub const __ILP32_OFFBIG_LDFLAGS: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"-m32\0") };
-#[allow(unsafe_code)]
-pub const __LP64_OFF64_CFLAGS: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"-m64\0") };
-#[allow(unsafe_code)]
-pub const __LP64_OFF64_LDFLAGS: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"-m64\0") };
-pub const STDIN_FILENO: u32 = 0;
-pub const STDOUT_FILENO: u32 = 1;
-pub const STDERR_FILENO: u32 = 2;
-pub const L_SET: u32 = 0;
-pub const L_INCR: u32 = 1;
-pub const L_XTND: u32 = 2;
-pub const _DIRENT_MATCHES_DIRENT64: u32 = 1;
-pub const MAXNAMLEN: u32 = 255;
 pub const IO_DIRECT_DATA: u32 = 1;
 pub const IO_DIRECT_WAL: u32 = 2;
 pub const IO_DIRECT_WAL_INIT: u32 = 4;
-pub const PG_O_DIRECT: u32 = 0;
+pub const PG_O_DIRECT: u32 = 16384;
 pub const SHARED_TUPLESTORE_SINGLE_PASS: u32 = 1;
 pub const MAX_TIMESTAMP_PRECISION: u32 = 6;
 pub const MAX_INTERVAL_PRECISION: u32 = 6;
@@ -1463,9 +784,7 @@ pub const POSTGRES_EPOCH_JDATE: u32 = 2451545;
 pub const DATETIME_MIN_JULIAN: u32 = 0;
 pub const DATE_END_JULIAN: u32 = 2147483494;
 pub const TIMESTAMP_END_JULIAN: u32 = 109203528;
-#[allow(unsafe_code)]
-pub const RELCACHE_INIT_FILENAME: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"pg_internal.init\0") };
+pub const RELCACHE_INIT_FILENAME: &::core::ffi::CStr = c"pg_internal.init";
 pub const SK_ISNULL: u32 = 1;
 pub const SK_UNARY: u32 = 2;
 pub const SK_ROW_HEADER: u32 = 4;
@@ -1485,6 +804,7 @@ pub const ShareRowExclusiveLock: u32 = 6;
 pub const ExclusiveLock: u32 = 7;
 pub const AccessExclusiveLock: u32 = 8;
 pub const MaxLockMode: u32 = 8;
+pub const InplaceUpdateTupleLock: u32 = 7;
 pub const TYPECACHE_EQ_OPR: u32 = 1;
 pub const TYPECACHE_LT_OPR: u32 = 2;
 pub const TYPECACHE_GT_OPR: u32 = 4;
@@ -1660,40 +980,10 @@ pub const SIGUSR2: u32 = 12;
 pub const SIGWINCH: u32 = 28;
 pub const SIGIO: u32 = 29;
 pub const SIGCLD: u32 = 17;
-pub const __SIGRTMIN: u32 = 32;
-pub const __SIGRTMAX: u32 = 64;
-pub const _NSIG: u32 = 65;
-pub const __sig_atomic_t_defined: u32 = 1;
-pub const __siginfo_t_defined: u32 = 1;
-pub const __SI_MAX_SIZE: u32 = 128;
-pub const __SI_ERRNO_THEN_CODE: u32 = 1;
-pub const __SI_HAVE_SIGSYS: u32 = 1;
-pub const __SI_ASYNCIO_AFTER_SIGIO: u32 = 1;
-pub const __sigevent_t_defined: u32 = 1;
-pub const __SIGEV_MAX_SIZE: u32 = 64;
-pub const NSIG: u32 = 65;
-pub const SA_NOCLDSTOP: u32 = 1;
-pub const SA_NOCLDWAIT: u32 = 2;
-pub const SA_SIGINFO: u32 = 4;
-pub const SA_ONSTACK: u32 = 134217728;
-pub const SA_RESTART: u32 = 268435456;
-pub const SA_NODEFER: u32 = 1073741824;
-pub const SA_RESETHAND: u32 = 2147483648;
-pub const SA_INTERRUPT: u32 = 536870912;
-pub const SA_NOMASK: u32 = 1073741824;
-pub const SA_ONESHOT: u32 = 2147483648;
-pub const SA_STACK: u32 = 134217728;
 pub const SIG_BLOCK: u32 = 0;
 pub const SIG_UNBLOCK: u32 = 1;
 pub const SIG_SETMASK: u32 = 2;
-pub const FP_XSTATE_MAGIC1: u32 = 1179670611;
-pub const FP_XSTATE_MAGIC2: u32 = 1179670597;
-pub const __stack_t_defined: u32 = 1;
-pub const __NGREG: u32 = 23;
-pub const NGREG: u32 = 23;
-pub const MINSIGSTKSZ: u32 = 2048;
 pub const SIGSTKSZ: u32 = 8192;
-pub const __sigstack_defined: u32 = 1;
 pub const TZ_STRLEN_MAX: u32 = 255;
 pub const InvalidPid: i32 = -1;
 pub const USE_POSTGRES_DATES: u32 = 0;
@@ -1719,423 +1009,8 @@ pub const INIT_PG_OVERRIDE_ALLOW_CONNS: u32 = 2;
 pub const INIT_PG_OVERRIDE_ROLE_LOGIN: u32 = 4;
 pub const MIN_XFN_CHARS: u32 = 16;
 pub const MAX_XFN_CHARS: u32 = 40;
-#[allow(unsafe_code)]
-pub const VALID_XFN_CHARS: &::core::ffi::CStr = unsafe {
-    ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"0123456789ABCDEF.history.backup.partial\0")
-};
+pub const VALID_XFN_CHARS: &::core::ffi::CStr = c"0123456789ABCDEF.history.backup.partial";
 pub const PGSTAT_NUM_PROGRESS_PARAM: u32 = 20;
-pub const PF_UNSPEC: u32 = 0;
-pub const PF_LOCAL: u32 = 1;
-pub const PF_UNIX: u32 = 1;
-pub const PF_FILE: u32 = 1;
-pub const PF_INET: u32 = 2;
-pub const PF_AX25: u32 = 3;
-pub const PF_IPX: u32 = 4;
-pub const PF_APPLETALK: u32 = 5;
-pub const PF_NETROM: u32 = 6;
-pub const PF_BRIDGE: u32 = 7;
-pub const PF_ATMPVC: u32 = 8;
-pub const PF_X25: u32 = 9;
-pub const PF_INET6: u32 = 10;
-pub const PF_ROSE: u32 = 11;
-pub const PF_DECnet: u32 = 12;
-pub const PF_NETBEUI: u32 = 13;
-pub const PF_SECURITY: u32 = 14;
-pub const PF_KEY: u32 = 15;
-pub const PF_NETLINK: u32 = 16;
-pub const PF_ROUTE: u32 = 16;
-pub const PF_PACKET: u32 = 17;
-pub const PF_ASH: u32 = 18;
-pub const PF_ECONET: u32 = 19;
-pub const PF_ATMSVC: u32 = 20;
-pub const PF_RDS: u32 = 21;
-pub const PF_SNA: u32 = 22;
-pub const PF_IRDA: u32 = 23;
-pub const PF_PPPOX: u32 = 24;
-pub const PF_WANPIPE: u32 = 25;
-pub const PF_LLC: u32 = 26;
-pub const PF_IB: u32 = 27;
-pub const PF_MPLS: u32 = 28;
-pub const PF_CAN: u32 = 29;
-pub const PF_TIPC: u32 = 30;
-pub const PF_BLUETOOTH: u32 = 31;
-pub const PF_IUCV: u32 = 32;
-pub const PF_RXRPC: u32 = 33;
-pub const PF_ISDN: u32 = 34;
-pub const PF_PHONET: u32 = 35;
-pub const PF_IEEE802154: u32 = 36;
-pub const PF_CAIF: u32 = 37;
-pub const PF_ALG: u32 = 38;
-pub const PF_NFC: u32 = 39;
-pub const PF_VSOCK: u32 = 40;
-pub const PF_KCM: u32 = 41;
-pub const PF_QIPCRTR: u32 = 42;
-pub const PF_SMC: u32 = 43;
-pub const PF_XDP: u32 = 44;
-pub const PF_MCTP: u32 = 45;
-pub const PF_MAX: u32 = 46;
-pub const AF_UNSPEC: u32 = 0;
-pub const AF_LOCAL: u32 = 1;
-pub const AF_UNIX: u32 = 1;
-pub const AF_FILE: u32 = 1;
-pub const AF_INET: u32 = 2;
-pub const AF_AX25: u32 = 3;
-pub const AF_IPX: u32 = 4;
-pub const AF_APPLETALK: u32 = 5;
-pub const AF_NETROM: u32 = 6;
-pub const AF_BRIDGE: u32 = 7;
-pub const AF_ATMPVC: u32 = 8;
-pub const AF_X25: u32 = 9;
-pub const AF_INET6: u32 = 10;
-pub const AF_ROSE: u32 = 11;
-pub const AF_DECnet: u32 = 12;
-pub const AF_NETBEUI: u32 = 13;
-pub const AF_SECURITY: u32 = 14;
-pub const AF_KEY: u32 = 15;
-pub const AF_NETLINK: u32 = 16;
-pub const AF_ROUTE: u32 = 16;
-pub const AF_PACKET: u32 = 17;
-pub const AF_ASH: u32 = 18;
-pub const AF_ECONET: u32 = 19;
-pub const AF_ATMSVC: u32 = 20;
-pub const AF_RDS: u32 = 21;
-pub const AF_SNA: u32 = 22;
-pub const AF_IRDA: u32 = 23;
-pub const AF_PPPOX: u32 = 24;
-pub const AF_WANPIPE: u32 = 25;
-pub const AF_LLC: u32 = 26;
-pub const AF_IB: u32 = 27;
-pub const AF_MPLS: u32 = 28;
-pub const AF_CAN: u32 = 29;
-pub const AF_TIPC: u32 = 30;
-pub const AF_BLUETOOTH: u32 = 31;
-pub const AF_IUCV: u32 = 32;
-pub const AF_RXRPC: u32 = 33;
-pub const AF_ISDN: u32 = 34;
-pub const AF_PHONET: u32 = 35;
-pub const AF_IEEE802154: u32 = 36;
-pub const AF_CAIF: u32 = 37;
-pub const AF_ALG: u32 = 38;
-pub const AF_NFC: u32 = 39;
-pub const AF_VSOCK: u32 = 40;
-pub const AF_KCM: u32 = 41;
-pub const AF_QIPCRTR: u32 = 42;
-pub const AF_SMC: u32 = 43;
-pub const AF_XDP: u32 = 44;
-pub const AF_MCTP: u32 = 45;
-pub const AF_MAX: u32 = 46;
-pub const SOL_RAW: u32 = 255;
-pub const SOL_DECNET: u32 = 261;
-pub const SOL_X25: u32 = 262;
-pub const SOL_PACKET: u32 = 263;
-pub const SOL_ATM: u32 = 264;
-pub const SOL_AAL: u32 = 265;
-pub const SOL_IRDA: u32 = 266;
-pub const SOL_NETBEUI: u32 = 267;
-pub const SOL_LLC: u32 = 268;
-pub const SOL_DCCP: u32 = 269;
-pub const SOL_NETLINK: u32 = 270;
-pub const SOL_TIPC: u32 = 271;
-pub const SOL_RXRPC: u32 = 272;
-pub const SOL_PPPOL2TP: u32 = 273;
-pub const SOL_BLUETOOTH: u32 = 274;
-pub const SOL_PNPIPE: u32 = 275;
-pub const SOL_RDS: u32 = 276;
-pub const SOL_IUCV: u32 = 277;
-pub const SOL_CAIF: u32 = 278;
-pub const SOL_ALG: u32 = 279;
-pub const SOL_NFC: u32 = 280;
-pub const SOL_KCM: u32 = 281;
-pub const SOL_TLS: u32 = 282;
-pub const SOL_XDP: u32 = 283;
-pub const SOMAXCONN: u32 = 4096;
-pub const _SS_SIZE: u32 = 128;
-pub const __BITS_PER_LONG: u32 = 64;
-pub const FIOSETOWN: u32 = 35073;
-pub const SIOCSPGRP: u32 = 35074;
-pub const FIOGETOWN: u32 = 35075;
-pub const SIOCGPGRP: u32 = 35076;
-pub const SIOCATMARK: u32 = 35077;
-pub const SIOCGSTAMP_OLD: u32 = 35078;
-pub const SIOCGSTAMPNS_OLD: u32 = 35079;
-pub const SOL_SOCKET: u32 = 1;
-pub const SO_DEBUG: u32 = 1;
-pub const SO_REUSEADDR: u32 = 2;
-pub const SO_TYPE: u32 = 3;
-pub const SO_ERROR: u32 = 4;
-pub const SO_DONTROUTE: u32 = 5;
-pub const SO_BROADCAST: u32 = 6;
-pub const SO_SNDBUF: u32 = 7;
-pub const SO_RCVBUF: u32 = 8;
-pub const SO_SNDBUFFORCE: u32 = 32;
-pub const SO_RCVBUFFORCE: u32 = 33;
-pub const SO_KEEPALIVE: u32 = 9;
-pub const SO_OOBINLINE: u32 = 10;
-pub const SO_NO_CHECK: u32 = 11;
-pub const SO_PRIORITY: u32 = 12;
-pub const SO_LINGER: u32 = 13;
-pub const SO_BSDCOMPAT: u32 = 14;
-pub const SO_REUSEPORT: u32 = 15;
-pub const SO_PASSCRED: u32 = 16;
-pub const SO_PEERCRED: u32 = 17;
-pub const SO_RCVLOWAT: u32 = 18;
-pub const SO_SNDLOWAT: u32 = 19;
-pub const SO_RCVTIMEO_OLD: u32 = 20;
-pub const SO_SNDTIMEO_OLD: u32 = 21;
-pub const SO_SECURITY_AUTHENTICATION: u32 = 22;
-pub const SO_SECURITY_ENCRYPTION_TRANSPORT: u32 = 23;
-pub const SO_SECURITY_ENCRYPTION_NETWORK: u32 = 24;
-pub const SO_BINDTODEVICE: u32 = 25;
-pub const SO_ATTACH_FILTER: u32 = 26;
-pub const SO_DETACH_FILTER: u32 = 27;
-pub const SO_GET_FILTER: u32 = 26;
-pub const SO_PEERNAME: u32 = 28;
-pub const SO_ACCEPTCONN: u32 = 30;
-pub const SO_PEERSEC: u32 = 31;
-pub const SO_PASSSEC: u32 = 34;
-pub const SO_MARK: u32 = 36;
-pub const SO_PROTOCOL: u32 = 38;
-pub const SO_DOMAIN: u32 = 39;
-pub const SO_RXQ_OVFL: u32 = 40;
-pub const SO_WIFI_STATUS: u32 = 41;
-pub const SCM_WIFI_STATUS: u32 = 41;
-pub const SO_PEEK_OFF: u32 = 42;
-pub const SO_NOFCS: u32 = 43;
-pub const SO_LOCK_FILTER: u32 = 44;
-pub const SO_SELECT_ERR_QUEUE: u32 = 45;
-pub const SO_BUSY_POLL: u32 = 46;
-pub const SO_MAX_PACING_RATE: u32 = 47;
-pub const SO_BPF_EXTENSIONS: u32 = 48;
-pub const SO_INCOMING_CPU: u32 = 49;
-pub const SO_ATTACH_BPF: u32 = 50;
-pub const SO_DETACH_BPF: u32 = 27;
-pub const SO_ATTACH_REUSEPORT_CBPF: u32 = 51;
-pub const SO_ATTACH_REUSEPORT_EBPF: u32 = 52;
-pub const SO_CNX_ADVICE: u32 = 53;
-pub const SCM_TIMESTAMPING_OPT_STATS: u32 = 54;
-pub const SO_MEMINFO: u32 = 55;
-pub const SO_INCOMING_NAPI_ID: u32 = 56;
-pub const SO_COOKIE: u32 = 57;
-pub const SCM_TIMESTAMPING_PKTINFO: u32 = 58;
-pub const SO_PEERGROUPS: u32 = 59;
-pub const SO_ZEROCOPY: u32 = 60;
-pub const SO_TXTIME: u32 = 61;
-pub const SCM_TXTIME: u32 = 61;
-pub const SO_BINDTOIFINDEX: u32 = 62;
-pub const SO_TIMESTAMP_OLD: u32 = 29;
-pub const SO_TIMESTAMPNS_OLD: u32 = 35;
-pub const SO_TIMESTAMPING_OLD: u32 = 37;
-pub const SO_TIMESTAMP_NEW: u32 = 63;
-pub const SO_TIMESTAMPNS_NEW: u32 = 64;
-pub const SO_TIMESTAMPING_NEW: u32 = 65;
-pub const SO_RCVTIMEO_NEW: u32 = 66;
-pub const SO_SNDTIMEO_NEW: u32 = 67;
-pub const SO_DETACH_REUSEPORT_BPF: u32 = 68;
-pub const SO_PREFER_BUSY_POLL: u32 = 69;
-pub const SO_BUSY_POLL_BUDGET: u32 = 70;
-pub const SO_NETNS_COOKIE: u32 = 71;
-pub const SO_BUF_LOCK: u32 = 72;
-pub const SO_TIMESTAMP: u32 = 29;
-pub const SO_TIMESTAMPNS: u32 = 35;
-pub const SO_TIMESTAMPING: u32 = 37;
-pub const SO_RCVTIMEO: u32 = 20;
-pub const SO_SNDTIMEO: u32 = 21;
-pub const SCM_TIMESTAMP: u32 = 29;
-pub const SCM_TIMESTAMPNS: u32 = 35;
-pub const SCM_TIMESTAMPING: u32 = 37;
-pub const __osockaddr_defined: u32 = 1;
-pub const __USE_KERNEL_IPV6_DEFS: u32 = 0;
-pub const IP_OPTIONS: u32 = 4;
-pub const IP_HDRINCL: u32 = 3;
-pub const IP_TOS: u32 = 1;
-pub const IP_TTL: u32 = 2;
-pub const IP_RECVOPTS: u32 = 6;
-pub const IP_RETOPTS: u32 = 7;
-pub const IP_MULTICAST_IF: u32 = 32;
-pub const IP_MULTICAST_TTL: u32 = 33;
-pub const IP_MULTICAST_LOOP: u32 = 34;
-pub const IP_ADD_MEMBERSHIP: u32 = 35;
-pub const IP_DROP_MEMBERSHIP: u32 = 36;
-pub const IP_UNBLOCK_SOURCE: u32 = 37;
-pub const IP_BLOCK_SOURCE: u32 = 38;
-pub const IP_ADD_SOURCE_MEMBERSHIP: u32 = 39;
-pub const IP_DROP_SOURCE_MEMBERSHIP: u32 = 40;
-pub const IP_MSFILTER: u32 = 41;
-pub const MCAST_JOIN_GROUP: u32 = 42;
-pub const MCAST_BLOCK_SOURCE: u32 = 43;
-pub const MCAST_UNBLOCK_SOURCE: u32 = 44;
-pub const MCAST_LEAVE_GROUP: u32 = 45;
-pub const MCAST_JOIN_SOURCE_GROUP: u32 = 46;
-pub const MCAST_LEAVE_SOURCE_GROUP: u32 = 47;
-pub const MCAST_MSFILTER: u32 = 48;
-pub const IP_MULTICAST_ALL: u32 = 49;
-pub const IP_UNICAST_IF: u32 = 50;
-pub const MCAST_EXCLUDE: u32 = 0;
-pub const MCAST_INCLUDE: u32 = 1;
-pub const IP_ROUTER_ALERT: u32 = 5;
-pub const IP_PKTINFO: u32 = 8;
-pub const IP_PKTOPTIONS: u32 = 9;
-pub const IP_PMTUDISC: u32 = 10;
-pub const IP_MTU_DISCOVER: u32 = 10;
-pub const IP_RECVERR: u32 = 11;
-pub const IP_RECVTTL: u32 = 12;
-pub const IP_RECVTOS: u32 = 13;
-pub const IP_MTU: u32 = 14;
-pub const IP_FREEBIND: u32 = 15;
-pub const IP_IPSEC_POLICY: u32 = 16;
-pub const IP_XFRM_POLICY: u32 = 17;
-pub const IP_PASSSEC: u32 = 18;
-pub const IP_TRANSPARENT: u32 = 19;
-pub const IP_ORIGDSTADDR: u32 = 20;
-pub const IP_RECVORIGDSTADDR: u32 = 20;
-pub const IP_MINTTL: u32 = 21;
-pub const IP_NODEFRAG: u32 = 22;
-pub const IP_CHECKSUM: u32 = 23;
-pub const IP_BIND_ADDRESS_NO_PORT: u32 = 24;
-pub const IP_RECVFRAGSIZE: u32 = 25;
-pub const IP_RECVERR_RFC4884: u32 = 26;
-pub const IP_PMTUDISC_DONT: u32 = 0;
-pub const IP_PMTUDISC_WANT: u32 = 1;
-pub const IP_PMTUDISC_DO: u32 = 2;
-pub const IP_PMTUDISC_PROBE: u32 = 3;
-pub const IP_PMTUDISC_INTERFACE: u32 = 4;
-pub const IP_PMTUDISC_OMIT: u32 = 5;
-pub const SOL_IP: u32 = 0;
-pub const IP_DEFAULT_MULTICAST_TTL: u32 = 1;
-pub const IP_DEFAULT_MULTICAST_LOOP: u32 = 1;
-pub const IP_MAX_MEMBERSHIPS: u32 = 20;
-pub const IPV6_ADDRFORM: u32 = 1;
-pub const IPV6_2292PKTINFO: u32 = 2;
-pub const IPV6_2292HOPOPTS: u32 = 3;
-pub const IPV6_2292DSTOPTS: u32 = 4;
-pub const IPV6_2292RTHDR: u32 = 5;
-pub const IPV6_2292PKTOPTIONS: u32 = 6;
-pub const IPV6_CHECKSUM: u32 = 7;
-pub const IPV6_2292HOPLIMIT: u32 = 8;
-pub const IPV6_NEXTHOP: u32 = 9;
-pub const IPV6_AUTHHDR: u32 = 10;
-pub const IPV6_UNICAST_HOPS: u32 = 16;
-pub const IPV6_MULTICAST_IF: u32 = 17;
-pub const IPV6_MULTICAST_HOPS: u32 = 18;
-pub const IPV6_MULTICAST_LOOP: u32 = 19;
-pub const IPV6_JOIN_GROUP: u32 = 20;
-pub const IPV6_LEAVE_GROUP: u32 = 21;
-pub const IPV6_ROUTER_ALERT: u32 = 22;
-pub const IPV6_MTU_DISCOVER: u32 = 23;
-pub const IPV6_MTU: u32 = 24;
-pub const IPV6_RECVERR: u32 = 25;
-pub const IPV6_V6ONLY: u32 = 26;
-pub const IPV6_JOIN_ANYCAST: u32 = 27;
-pub const IPV6_LEAVE_ANYCAST: u32 = 28;
-pub const IPV6_MULTICAST_ALL: u32 = 29;
-pub const IPV6_ROUTER_ALERT_ISOLATE: u32 = 30;
-pub const IPV6_RECVERR_RFC4884: u32 = 31;
-pub const IPV6_IPSEC_POLICY: u32 = 34;
-pub const IPV6_XFRM_POLICY: u32 = 35;
-pub const IPV6_HDRINCL: u32 = 36;
-pub const IPV6_RECVPKTINFO: u32 = 49;
-pub const IPV6_PKTINFO: u32 = 50;
-pub const IPV6_RECVHOPLIMIT: u32 = 51;
-pub const IPV6_HOPLIMIT: u32 = 52;
-pub const IPV6_RECVHOPOPTS: u32 = 53;
-pub const IPV6_HOPOPTS: u32 = 54;
-pub const IPV6_RTHDRDSTOPTS: u32 = 55;
-pub const IPV6_RECVRTHDR: u32 = 56;
-pub const IPV6_RTHDR: u32 = 57;
-pub const IPV6_RECVDSTOPTS: u32 = 58;
-pub const IPV6_DSTOPTS: u32 = 59;
-pub const IPV6_RECVPATHMTU: u32 = 60;
-pub const IPV6_PATHMTU: u32 = 61;
-pub const IPV6_DONTFRAG: u32 = 62;
-pub const IPV6_RECVTCLASS: u32 = 66;
-pub const IPV6_TCLASS: u32 = 67;
-pub const IPV6_AUTOFLOWLABEL: u32 = 70;
-pub const IPV6_ADDR_PREFERENCES: u32 = 72;
-pub const IPV6_MINHOPCOUNT: u32 = 73;
-pub const IPV6_ORIGDSTADDR: u32 = 74;
-pub const IPV6_RECVORIGDSTADDR: u32 = 74;
-pub const IPV6_TRANSPARENT: u32 = 75;
-pub const IPV6_UNICAST_IF: u32 = 76;
-pub const IPV6_RECVFRAGSIZE: u32 = 77;
-pub const IPV6_FREEBIND: u32 = 78;
-pub const IPV6_ADD_MEMBERSHIP: u32 = 20;
-pub const IPV6_DROP_MEMBERSHIP: u32 = 21;
-pub const IPV6_RXHOPOPTS: u32 = 54;
-pub const IPV6_RXDSTOPTS: u32 = 59;
-pub const IPV6_PMTUDISC_DONT: u32 = 0;
-pub const IPV6_PMTUDISC_WANT: u32 = 1;
-pub const IPV6_PMTUDISC_DO: u32 = 2;
-pub const IPV6_PMTUDISC_PROBE: u32 = 3;
-pub const IPV6_PMTUDISC_INTERFACE: u32 = 4;
-pub const IPV6_PMTUDISC_OMIT: u32 = 5;
-pub const SOL_IPV6: u32 = 41;
-pub const SOL_ICMPV6: u32 = 58;
-pub const IPV6_RTHDR_LOOSE: u32 = 0;
-pub const IPV6_RTHDR_STRICT: u32 = 1;
-pub const IPV6_RTHDR_TYPE_0: u32 = 0;
-pub const IN_CLASSA_NET: u32 = 4278190080;
-pub const IN_CLASSA_NSHIFT: u32 = 24;
-pub const IN_CLASSA_HOST: u32 = 16777215;
-pub const IN_CLASSA_MAX: u32 = 128;
-pub const IN_CLASSB_NET: u32 = 4294901760;
-pub const IN_CLASSB_NSHIFT: u32 = 16;
-pub const IN_CLASSB_HOST: u32 = 65535;
-pub const IN_CLASSB_MAX: u32 = 65536;
-pub const IN_CLASSC_NET: u32 = 4294967040;
-pub const IN_CLASSC_NSHIFT: u32 = 8;
-pub const IN_CLASSC_HOST: u32 = 255;
-pub const IN_LOOPBACKNET: u32 = 127;
-pub const INET_ADDRSTRLEN: u32 = 16;
-pub const INET6_ADDRSTRLEN: u32 = 46;
-#[allow(unsafe_code)]
-pub const _PATH_HEQUIV: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/etc/hosts.equiv\0") };
-#[allow(unsafe_code)]
-pub const _PATH_HOSTS: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/etc/hosts\0") };
-#[allow(unsafe_code)]
-pub const _PATH_NETWORKS: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/etc/networks\0") };
-#[allow(unsafe_code)]
-pub const _PATH_NSSWITCH_CONF: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/etc/nsswitch.conf\0") };
-#[allow(unsafe_code)]
-pub const _PATH_PROTOCOLS: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/etc/protocols\0") };
-#[allow(unsafe_code)]
-pub const _PATH_SERVICES: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"/etc/services\0") };
-pub const HOST_NOT_FOUND: u32 = 1;
-pub const TRY_AGAIN: u32 = 2;
-pub const NO_RECOVERY: u32 = 3;
-pub const NO_DATA: u32 = 4;
-pub const NETDB_INTERNAL: i32 = -1;
-pub const NETDB_SUCCESS: u32 = 0;
-pub const NO_ADDRESS: u32 = 4;
-pub const AI_PASSIVE: u32 = 1;
-pub const AI_CANONNAME: u32 = 2;
-pub const AI_NUMERICHOST: u32 = 4;
-pub const AI_V4MAPPED: u32 = 8;
-pub const AI_ALL: u32 = 16;
-pub const AI_ADDRCONFIG: u32 = 32;
-pub const AI_NUMERICSERV: u32 = 1024;
-pub const EAI_BADFLAGS: i32 = -1;
-pub const EAI_NONAME: i32 = -2;
-pub const EAI_AGAIN: i32 = -3;
-pub const EAI_FAIL: i32 = -4;
-pub const EAI_FAMILY: i32 = -6;
-pub const EAI_SOCKTYPE: i32 = -7;
-pub const EAI_SERVICE: i32 = -8;
-pub const EAI_MEMORY: i32 = -10;
-pub const EAI_SYSTEM: i32 = -11;
-pub const EAI_OVERFLOW: i32 = -12;
-pub const NI_MAXHOST: u32 = 1025;
-pub const NI_MAXSERV: u32 = 32;
-pub const NI_NUMERICHOST: u32 = 1;
-pub const NI_NUMERICSERV: u32 = 2;
-pub const NI_NOFQDN: u32 = 4;
-pub const NI_NAMEREQD: u32 = 8;
-pub const NI_DGRAM: u32 = 16;
 pub const PqMsg_Bind: u8 = 66u8;
 pub const PqMsg_Close: u8 = 67u8;
 pub const PqMsg_Describe: u8 = 68u8;
@@ -2190,9 +1065,7 @@ pub const AUTH_REQ_SASL_CONT: u32 = 11;
 pub const AUTH_REQ_SASL_FIN: u32 = 12;
 pub const AUTH_REQ_MAX: u32 = 12;
 pub const MAX_STARTUP_PACKET_LENGTH: u32 = 10000;
-#[allow(unsafe_code)]
-pub const PG_ALPN_PROTOCOL: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"postgresql\0") };
+pub const PG_ALPN_PROTOCOL: &::core::ffi::CStr = c"postgresql";
 pub const PG_WAIT_LWLOCK: u32 = 16777216;
 pub const PG_WAIT_LOCK: u32 = 50331648;
 pub const PG_WAIT_BUFFERPIN: u32 = 67108864;
@@ -2203,18 +1076,10 @@ pub const PG_WAIT_IPC: u32 = 134217728;
 pub const PG_WAIT_TIMEOUT: u32 = 150994944;
 pub const PG_WAIT_IO: u32 = 167772160;
 pub const PG_WAIT_INJECTIONPOINT: u32 = 184549376;
-#[allow(unsafe_code)]
-pub const PGSTAT_STAT_PERMANENT_DIRECTORY: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"pg_stat\0") };
-#[allow(unsafe_code)]
-pub const PGSTAT_STAT_PERMANENT_FILENAME: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"pg_stat/pgstat.stat\0") };
-#[allow(unsafe_code)]
-pub const PGSTAT_STAT_PERMANENT_TMPFILE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"pg_stat/pgstat.tmp\0") };
-#[allow(unsafe_code)]
-pub const PG_STAT_TMP_DIR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"pg_stat_tmp\0") };
+pub const PGSTAT_STAT_PERMANENT_DIRECTORY: &::core::ffi::CStr = c"pg_stat";
+pub const PGSTAT_STAT_PERMANENT_FILENAME: &::core::ffi::CStr = c"pg_stat/pgstat.stat";
+pub const PGSTAT_STAT_PERMANENT_TMPFILE: &::core::ffi::CStr = c"pg_stat/pgstat.tmp";
+pub const PG_STAT_TMP_DIR: &::core::ffi::CStr = c"pg_stat_tmp";
 pub const PGSTAT_FILE_FORMAT_ID: u32 = 27638956;
 pub const CHECKPOINT_IS_SHUTDOWN: u32 = 1;
 pub const CHECKPOINT_END_OF_RECOVERY: u32 = 2;
@@ -2227,27 +1092,13 @@ pub const CHECKPOINT_CAUSE_XLOG: u32 = 128;
 pub const CHECKPOINT_CAUSE_TIME: u32 = 256;
 pub const XLOG_INCLUDE_ORIGIN: u32 = 1;
 pub const XLOG_MARK_UNIMPORTANT: u32 = 2;
-#[allow(unsafe_code)]
-pub const RECOVERY_SIGNAL_FILE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"recovery.signal\0") };
-#[allow(unsafe_code)]
-pub const STANDBY_SIGNAL_FILE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"standby.signal\0") };
-#[allow(unsafe_code)]
-pub const BACKUP_LABEL_FILE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"backup_label\0") };
-#[allow(unsafe_code)]
-pub const BACKUP_LABEL_OLD: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"backup_label.old\0") };
-#[allow(unsafe_code)]
-pub const TABLESPACE_MAP: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"tablespace_map\0") };
-#[allow(unsafe_code)]
-pub const TABLESPACE_MAP_OLD: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"tablespace_map.old\0") };
-#[allow(unsafe_code)]
-pub const PROMOTE_SIGNAL_FILE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"promote\0") };
+pub const RECOVERY_SIGNAL_FILE: &::core::ffi::CStr = c"recovery.signal";
+pub const STANDBY_SIGNAL_FILE: &::core::ffi::CStr = c"standby.signal";
+pub const BACKUP_LABEL_FILE: &::core::ffi::CStr = c"backup_label";
+pub const BACKUP_LABEL_OLD: &::core::ffi::CStr = c"backup_label.old";
+pub const TABLESPACE_MAP: &::core::ffi::CStr = c"tablespace_map";
+pub const TABLESPACE_MAP_OLD: &::core::ffi::CStr = c"tablespace_map.old";
+pub const PROMOTE_SIGNAL_FILE: &::core::ffi::CStr = c"promote";
 pub const RM_MAX_ID: u32 = 255;
 pub const RM_MIN_CUSTOM_ID: u32 = 128;
 pub const RM_MAX_CUSTOM_ID: u32 = 255;
@@ -2479,9 +1330,7 @@ pub const READ_STREAM_DEFAULT: u32 = 0;
 pub const READ_STREAM_MAINTENANCE: u32 = 1;
 pub const READ_STREAM_SEQUENTIAL: u32 = 2;
 pub const READ_STREAM_FULL: u32 = 4;
-#[allow(unsafe_code)]
-pub const DEFAULT_TABLE_ACCESS_METHOD: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"heap\0") };
+pub const DEFAULT_TABLE_ACCESS_METHOD: &::core::ffi::CStr = c"heap";
 pub const TABLE_INSERT_SKIP_FSM: u32 = 2;
 pub const TABLE_INSERT_FROZEN: u32 = 4;
 pub const TABLE_INSERT_NO_LOGICAL: u32 = 8;
@@ -2536,12 +1385,8 @@ pub const WalSegMinSize: u32 = 1048576;
 pub const WalSegMaxSize: u32 = 1073741824;
 pub const DEFAULT_MIN_WAL_SEGS: u32 = 5;
 pub const DEFAULT_MAX_WAL_SEGS: u32 = 64;
-#[allow(unsafe_code)]
-pub const XLOGDIR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"pg_wal\0") };
-#[allow(unsafe_code)]
-pub const XLOG_CONTROL_FILE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"global/pg_control\0") };
+pub const XLOGDIR: &::core::ffi::CStr = c"pg_wal";
+pub const XLOG_CONTROL_FILE: &::core::ffi::CStr = c"global/pg_control";
 pub const MAXFNAMELEN: u32 = 64;
 pub const XLOG_FNAME_LEN: u32 = 24;
 pub const PG_CONTROL_VERSION: u32 = 1700;
@@ -2569,9 +1414,11 @@ pub const PERFORM_DELETION_QUIETLY: u32 = 4;
 pub const PERFORM_DELETION_SKIP_ORIGINAL: u32 = 8;
 pub const PERFORM_DELETION_SKIP_EXTENSIONS: u32 = 16;
 pub const PERFORM_DELETION_CONCURRENT_LOCK: u32 = 32;
-#[allow(unsafe_code)]
-pub const DEFAULT_INDEX_TYPE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"btree\0") };
+pub const MAX_CATALOG_MULTI_INSERT_BYTES: u32 = 65535;
+pub const CHKATYPE_ANYARRAY: u32 = 1;
+pub const CHKATYPE_ANYRECORD: u32 = 2;
+pub const CHKATYPE_IS_PARTKEY: u32 = 4;
+pub const DEFAULT_INDEX_TYPE: &::core::ffi::CStr = c"btree";
 pub const REINDEXOPT_VERBOSE: u32 = 1;
 pub const REINDEXOPT_REPORT_PROGRESS: u32 = 2;
 pub const REINDEXOPT_MISSING_OK: u32 = 4;
@@ -2593,7 +1440,6 @@ pub const REINDEX_REL_SUPPRESS_INDEX_USE: u32 = 2;
 pub const REINDEX_REL_CHECK_CONSTRAINTS: u32 = 4;
 pub const REINDEX_REL_FORCE_INDEXES_UNLOGGED: u32 = 8;
 pub const REINDEX_REL_FORCE_INDEXES_PERMANENT: u32 = 16;
-pub const MAX_CATALOG_MULTI_INSERT_BYTES: u32 = 65535;
 pub const AccessMethodRelationId: Oid = Oid(2601);
 pub const AmNameIndexId: u32 = 2651;
 pub const AmOidIndexId: u32 = 2652;
@@ -3019,9 +1865,7 @@ pub const ACL_CONNECT_CHR: u8 = 99u8;
 pub const ACL_SET_CHR: u8 = 115u8;
 pub const ACL_ALTER_SYSTEM_CHR: u8 = 65u8;
 pub const ACL_MAINTAIN_CHR: u8 = 109u8;
-#[allow(unsafe_code)]
-pub const ACL_ALL_RIGHTS_STR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"arwdDxtXUCTcsAm\0") };
+pub const ACL_ALL_RIGHTS_STR: &::core::ffi::CStr = c"arwdDxtXUCTcsAm";
 pub const ACL_ALL_RIGHTS_COLUMN: u32 = 39;
 pub const ACL_ALL_RIGHTS_RELATION: u32 = 16511;
 pub const ACL_ALL_RIGHTS_SEQUENCE: u32 = 262;
@@ -3043,6 +1887,24 @@ pub const Anum_pg_seclabel_objsubid: u32 = 3;
 pub const Anum_pg_seclabel_provider: u32 = 4;
 pub const Anum_pg_seclabel_label: u32 = 5;
 pub const Natts_pg_seclabel: u32 = 5;
+pub const StatisticExtRelationId: Oid = Oid(3381);
+pub const StatisticExtOidIndexId: u32 = 3380;
+pub const StatisticExtNameIndexId: u32 = 3997;
+pub const StatisticExtRelidIndexId: u32 = 3379;
+pub const Anum_pg_statistic_ext_oid: u32 = 1;
+pub const Anum_pg_statistic_ext_stxrelid: u32 = 2;
+pub const Anum_pg_statistic_ext_stxname: u32 = 3;
+pub const Anum_pg_statistic_ext_stxnamespace: u32 = 4;
+pub const Anum_pg_statistic_ext_stxowner: u32 = 5;
+pub const Anum_pg_statistic_ext_stxkeys: u32 = 6;
+pub const Anum_pg_statistic_ext_stxstattarget: u32 = 7;
+pub const Anum_pg_statistic_ext_stxkind: u32 = 8;
+pub const Anum_pg_statistic_ext_stxexprs: u32 = 9;
+pub const Natts_pg_statistic_ext: u32 = 9;
+pub const STATS_EXT_NDISTINCT: u8 = 100u8;
+pub const STATS_EXT_DEPENDENCIES: u8 = 102u8;
+pub const STATS_EXT_MCV: u8 = 109u8;
+pub const STATS_EXT_EXPRESSIONS: u8 = 101u8;
 pub const TableSpaceRelationId: Oid = Oid(1213);
 pub const PgTablespaceToastTable: u32 = 4185;
 pub const PgTablespaceToastIndex: u32 = 4186;
@@ -3242,9 +2104,7 @@ pub const TRIGGER_DISABLED: u8 = 68u8;
 pub const RI_TRIGGER_PK: u32 = 1;
 pub const RI_TRIGGER_FK: u32 = 2;
 pub const RI_TRIGGER_NONE: u32 = 0;
-#[allow(unsafe_code)]
-pub const PG_AUTOCONF_FILENAME: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"postgresql.auto.conf\0") };
+pub const PG_AUTOCONF_FILENAME: &::core::ffi::CStr = c"postgresql.auto.conf";
 pub const GUC_QUALIFIER_SEPARATOR: u8 = 46u8;
 pub const GUC_LIST_INPUT: u32 = 1;
 pub const GUC_LIST_QUOTE: u32 = 2;
@@ -3310,6 +2170,7 @@ pub const PROC_XMIN_FLAGS: u32 = 6;
 pub const FP_LOCK_SLOTS_PER_BACKEND: u32 = 16;
 pub const DELAY_CHKPT_START: u32 = 1;
 pub const DELAY_CHKPT_COMPLETE: u32 = 2;
+pub const NUM_SPECIAL_WORKER_PROCS: u32 = 2;
 pub const NUM_AUXILIARY_PROCS: u32 = 6;
 pub const StatisticRelationId: Oid = Oid(2619);
 pub const StatisticRelidAttnumInhIndexId: u32 = 2696;
@@ -3526,12 +2387,8 @@ pub const PIPE_PROTO_IS_LAST: u32 = 1;
 pub const PIPE_PROTO_DEST_STDERR: u32 = 16;
 pub const PIPE_PROTO_DEST_CSVLOG: u32 = 32;
 pub const PIPE_PROTO_DEST_JSONLOG: u32 = 64;
-#[allow(unsafe_code)]
-pub const LOG_METAINFO_DATAFILE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"current_logfiles\0") };
-#[allow(unsafe_code)]
-pub const LOG_METAINFO_DATAFILE_TMP: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"current_logfiles.tmp\0") };
+pub const LOG_METAINFO_DATAFILE: &::core::ffi::CStr = c"current_logfiles";
+pub const LOG_METAINFO_DATAFILE_TMP: &::core::ffi::CStr = c"current_logfiles.tmp";
 pub const RBTXN_HAS_CATALOG_CHANGES: u32 = 1;
 pub const RBTXN_IS_SUBXACT: u32 = 2;
 pub const RBTXN_IS_SERIALIZED: u32 = 4;
@@ -3552,6 +2409,33 @@ pub const LOGICALREP_COLUMN_UNCHANGED: u8 = 117u8;
 pub const LOGICALREP_COLUMN_TEXT: u8 = 116u8;
 pub const LOGICALREP_COLUMN_BINARY: u8 = 98u8;
 pub const MAXCONNINFO: u32 = 1024;
+pub const STATS_MAX_DIMENSIONS: u32 = 8;
+pub const STATS_NDISTINCT_MAGIC: u32 = 2740109220;
+pub const STATS_NDISTINCT_TYPE_BASIC: u32 = 1;
+pub const STATS_DEPS_MAGIC: u32 = 3025443372;
+pub const STATS_DEPS_TYPE_BASIC: u32 = 1;
+pub const STATS_MCV_MAGIC: u32 = 3785773506;
+pub const STATS_MCV_TYPE_BASIC: u32 = 1;
+pub const STATS_MCVLIST_MAX_ITEMS: u32 = 10000;
+pub const BUF_REFCOUNT_ONE: u32 = 1;
+pub const BUF_REFCOUNT_MASK: u32 = 262143;
+pub const BUF_USAGECOUNT_MASK: u32 = 3932160;
+pub const BUF_USAGECOUNT_ONE: u32 = 262144;
+pub const BUF_USAGECOUNT_SHIFT: u32 = 18;
+pub const BUF_FLAG_MASK: u32 = 4290772992;
+pub const BM_LOCKED: u32 = 4194304;
+pub const BM_DIRTY: u32 = 8388608;
+pub const BM_VALID: u32 = 16777216;
+pub const BM_TAG_VALID: u32 = 33554432;
+pub const BM_IO_IN_PROGRESS: u32 = 67108864;
+pub const BM_IO_ERROR: u32 = 134217728;
+pub const BM_JUST_DIRTIED: u32 = 268435456;
+pub const BM_PIN_COUNT_WAITER: u32 = 536870912;
+pub const BM_CHECKPOINT_NEEDED: u32 = 1073741824;
+pub const BM_PERMANENT: u32 = 2147483648;
+pub const BM_MAX_USAGE_COUNT: u32 = 5;
+pub const FREENEXT_END_OF_LIST: i32 = -1;
+pub const FREENEXT_NOT_IN_LIST: i32 = -2;
 pub const XLOG_STANDBY_LOCK: u32 = 0;
 pub const XLOG_RUNNING_XACTS: u32 = 16;
 pub const XLOG_INVALIDATIONS: u32 = 32;
@@ -3597,87 +2481,33 @@ pub const FORMAT_TYPE_ALLOW_INVALID: u32 = 2;
 pub const FORMAT_TYPE_FORCE_QUALIFY: u32 = 4;
 pub const FORMAT_TYPE_INVALID_AS_NULL: u32 = 8;
 pub const MAX_TIME_PRECISION: u32 = 6;
-#[allow(unsafe_code)]
-pub const DAGO: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"ago\0") };
-#[allow(unsafe_code)]
-pub const DCURRENT: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"current\0") };
-#[allow(unsafe_code)]
-pub const EPOCH: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"epoch\0") };
-#[allow(unsafe_code)]
-pub const INVALID: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"invalid\0") };
-#[allow(unsafe_code)]
-pub const EARLY: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"-infinity\0") };
-#[allow(unsafe_code)]
-pub const LATE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"infinity\0") };
-#[allow(unsafe_code)]
-pub const NOW: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"now\0") };
-#[allow(unsafe_code)]
-pub const TODAY: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"today\0") };
-#[allow(unsafe_code)]
-pub const TOMORROW: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"tomorrow\0") };
-#[allow(unsafe_code)]
-pub const YESTERDAY: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"yesterday\0") };
-#[allow(unsafe_code)]
-pub const ZULU: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"zulu\0") };
-#[allow(unsafe_code)]
-pub const DMICROSEC: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"usecond\0") };
-#[allow(unsafe_code)]
-pub const DMILLISEC: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"msecond\0") };
-#[allow(unsafe_code)]
-pub const DSECOND: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"second\0") };
-#[allow(unsafe_code)]
-pub const DMINUTE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"minute\0") };
-#[allow(unsafe_code)]
-pub const DHOUR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"hour\0") };
-#[allow(unsafe_code)]
-pub const DDAY: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"day\0") };
-#[allow(unsafe_code)]
-pub const DWEEK: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"week\0") };
-#[allow(unsafe_code)]
-pub const DMONTH: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"month\0") };
-#[allow(unsafe_code)]
-pub const DQUARTER: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"quarter\0") };
-#[allow(unsafe_code)]
-pub const DYEAR: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"year\0") };
-#[allow(unsafe_code)]
-pub const DDECADE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"decade\0") };
-#[allow(unsafe_code)]
-pub const DCENTURY: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"century\0") };
-#[allow(unsafe_code)]
-pub const DMILLENNIUM: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"millennium\0") };
-#[allow(unsafe_code)]
-pub const DA_D: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"ad\0") };
-#[allow(unsafe_code)]
-pub const DB_C: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"bc\0") };
-#[allow(unsafe_code)]
-pub const DTIMEZONE: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"timezone\0") };
+pub const DAGO: &::core::ffi::CStr = c"ago";
+pub const DCURRENT: &::core::ffi::CStr = c"current";
+pub const EPOCH: &::core::ffi::CStr = c"epoch";
+pub const INVALID: &::core::ffi::CStr = c"invalid";
+pub const EARLY: &::core::ffi::CStr = c"-infinity";
+pub const LATE: &::core::ffi::CStr = c"infinity";
+pub const NOW: &::core::ffi::CStr = c"now";
+pub const TODAY: &::core::ffi::CStr = c"today";
+pub const TOMORROW: &::core::ffi::CStr = c"tomorrow";
+pub const YESTERDAY: &::core::ffi::CStr = c"yesterday";
+pub const ZULU: &::core::ffi::CStr = c"zulu";
+pub const DMICROSEC: &::core::ffi::CStr = c"usecond";
+pub const DMILLISEC: &::core::ffi::CStr = c"msecond";
+pub const DSECOND: &::core::ffi::CStr = c"second";
+pub const DMINUTE: &::core::ffi::CStr = c"minute";
+pub const DHOUR: &::core::ffi::CStr = c"hour";
+pub const DDAY: &::core::ffi::CStr = c"day";
+pub const DWEEK: &::core::ffi::CStr = c"week";
+pub const DMONTH: &::core::ffi::CStr = c"month";
+pub const DQUARTER: &::core::ffi::CStr = c"quarter";
+pub const DYEAR: &::core::ffi::CStr = c"year";
+pub const DDECADE: &::core::ffi::CStr = c"decade";
+pub const DCENTURY: &::core::ffi::CStr = c"century";
+pub const DMILLENNIUM: &::core::ffi::CStr = c"millennium";
+pub const DA_D: &::core::ffi::CStr = c"ad";
+pub const DB_C: &::core::ffi::CStr = c"bc";
+pub const DTIMEZONE: &::core::ffi::CStr = c"timezone";
 pub const AM: u32 = 0;
 pub const PM: u32 = 1;
 pub const HR24: u32 = 2;
@@ -7115,6 +5945,7 @@ pub const JB_FOBJECT: u32 = 536870912;
 pub const JB_FARRAY: u32 = 1073741824;
 pub const ATTSTATSSLOT_VALUES: u32 = 1;
 pub const ATTSTATSSLOT_NUMBERS: u32 = 2;
+pub const DEFAULT_UPDATE_PROCESS_TITLE: u32 = 1;
 pub const FORMAT_PROC_INVALID_AS_NULL: u32 = 1;
 pub const FORMAT_PROC_FORCE_QUALIFY: u32 = 2;
 pub const FORMAT_OPERATOR_INVALID_AS_NULL: u32 = 1;
@@ -7134,9 +5965,7 @@ pub const SELFLAG_USED_DEFAULT: u32 = 1;
 pub const CATCACHE_MAXKEYS: u32 = 4;
 pub const CT_MAGIC: u32 = 1462113538;
 pub const CL_MAGIC: u32 = 1383485699;
-#[allow(unsafe_code)]
-pub const RANGE_EMPTY_LITERAL: &::core::ffi::CStr =
-    unsafe { ::core::ffi::CStr::from_bytes_with_nul_unchecked(b"empty\0") };
+pub const RANGE_EMPTY_LITERAL: &::core::ffi::CStr = c"empty";
 pub const RANGE_EMPTY: u32 = 1;
 pub const RANGE_LB_INC: u32 = 2;
 pub const RANGE_UB_INC: u32 = 4;
@@ -7157,137 +5986,15 @@ pub const RANGESTRAT_CONTAINS_ELEM: u32 = 16;
 pub const RANGESTRAT_EQ: u32 = 18;
 pub type pg_int64 = ::core::ffi::c_long;
 pub type va_list = __builtin_va_list;
-pub type __gnuc_va_list = __builtin_va_list;
-pub type __u_char = ::core::ffi::c_uchar;
-pub type __u_short = ::core::ffi::c_ushort;
-pub type __u_int = ::core::ffi::c_uint;
-pub type __u_long = ::core::ffi::c_ulong;
-pub type __int8_t = ::core::ffi::c_schar;
-pub type __uint8_t = ::core::ffi::c_uchar;
-pub type __int16_t = ::core::ffi::c_short;
-pub type __uint16_t = ::core::ffi::c_ushort;
-pub type __int32_t = ::core::ffi::c_int;
-pub type __uint32_t = ::core::ffi::c_uint;
-pub type __int64_t = ::core::ffi::c_long;
-pub type __uint64_t = ::core::ffi::c_ulong;
-pub type __int_least8_t = __int8_t;
-pub type __uint_least8_t = __uint8_t;
-pub type __int_least16_t = __int16_t;
-pub type __uint_least16_t = __uint16_t;
-pub type __int_least32_t = __int32_t;
-pub type __uint_least32_t = __uint32_t;
-pub type __int_least64_t = __int64_t;
-pub type __uint_least64_t = __uint64_t;
-pub type __quad_t = ::core::ffi::c_long;
-pub type __u_quad_t = ::core::ffi::c_ulong;
-pub type __intmax_t = ::core::ffi::c_long;
-pub type __uintmax_t = ::core::ffi::c_ulong;
-pub type __dev_t = ::core::ffi::c_ulong;
 pub type __uid_t = ::core::ffi::c_uint;
 pub type __gid_t = ::core::ffi::c_uint;
 pub type __ino_t = ::core::ffi::c_ulong;
-pub type __ino64_t = ::core::ffi::c_ulong;
 pub type __mode_t = ::core::ffi::c_uint;
-pub type __nlink_t = ::core::ffi::c_ulong;
 pub type __off_t = ::core::ffi::c_long;
 pub type __off64_t = ::core::ffi::c_long;
 pub type __pid_t = ::core::ffi::c_int;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct __fsid_t {
-    pub __val: [::core::ffi::c_int; 2usize],
-}
-pub type __clock_t = ::core::ffi::c_long;
-pub type __rlim_t = ::core::ffi::c_ulong;
-pub type __rlim64_t = ::core::ffi::c_ulong;
-pub type __id_t = ::core::ffi::c_uint;
-pub type __time_t = ::core::ffi::c_long;
-pub type __useconds_t = ::core::ffi::c_uint;
-pub type __suseconds_t = ::core::ffi::c_long;
-pub type __suseconds64_t = ::core::ffi::c_long;
-pub type __daddr_t = ::core::ffi::c_int;
-pub type __key_t = ::core::ffi::c_int;
-pub type __clockid_t = ::core::ffi::c_int;
-pub type __timer_t = *mut ::core::ffi::c_void;
-pub type __blksize_t = ::core::ffi::c_long;
-pub type __blkcnt_t = ::core::ffi::c_long;
-pub type __blkcnt64_t = ::core::ffi::c_long;
-pub type __fsblkcnt_t = ::core::ffi::c_ulong;
-pub type __fsblkcnt64_t = ::core::ffi::c_ulong;
-pub type __fsfilcnt_t = ::core::ffi::c_ulong;
-pub type __fsfilcnt64_t = ::core::ffi::c_ulong;
-pub type __fsword_t = ::core::ffi::c_long;
-pub type __ssize_t = ::core::ffi::c_long;
-pub type __syscall_slong_t = ::core::ffi::c_long;
-pub type __syscall_ulong_t = ::core::ffi::c_ulong;
-pub type __loff_t = __off64_t;
-pub type __caddr_t = *mut ::core::ffi::c_char;
-pub type __intptr_t = ::core::ffi::c_long;
 pub type __socklen_t = ::core::ffi::c_uint;
 pub type __sig_atomic_t = ::core::ffi::c_int;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct __mbstate_t {
-    pub __count: ::core::ffi::c_int,
-    pub __value: __mbstate_t__bindgen_ty_1,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union __mbstate_t__bindgen_ty_1 {
-    pub __wch: ::core::ffi::c_uint,
-    pub __wchb: [::core::ffi::c_char; 4usize],
-}
-impl Default for __mbstate_t__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for __mbstate_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct _G_fpos_t {
-    pub __pos: __off_t,
-    pub __state: __mbstate_t,
-}
-impl Default for _G_fpos_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type __fpos_t = _G_fpos_t;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct _G_fpos64_t {
-    pub __pos: __off64_t,
-    pub __state: __mbstate_t,
-}
-impl Default for _G_fpos64_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type __fpos64_t = _G_fpos64_t;
-pub type __FILE = _IO_FILE;
 pub type FILE = _IO_FILE;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -7348,468 +6055,16 @@ impl Default for _IO_FILE {
     }
 }
 pub type off_t = __off_t;
-pub type fpos_t = __fpos_t;
-pub type _Float32 = f32;
-pub type _Float64 = f64;
-pub type _Float32x = f64;
-pub type _Float64x = u128;
-pub type wchar_t = ::core::ffi::c_int;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct div_t {
-    pub quot: ::core::ffi::c_int,
-    pub rem: ::core::ffi::c_int,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ldiv_t {
-    pub quot: ::core::ffi::c_long,
-    pub rem: ::core::ffi::c_long,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct lldiv_t {
-    pub quot: ::core::ffi::c_longlong,
-    pub rem: ::core::ffi::c_longlong,
-}
-pub type u_char = __u_char;
-pub type u_short = __u_short;
-pub type u_int = __u_int;
-pub type u_long = __u_long;
-pub type quad_t = __quad_t;
-pub type u_quad_t = __u_quad_t;
-pub type fsid_t = __fsid_t;
-pub type loff_t = __loff_t;
-pub type ino_t = __ino_t;
-pub type dev_t = __dev_t;
 pub type gid_t = __gid_t;
 pub type mode_t = __mode_t;
-pub type nlink_t = __nlink_t;
 pub type uid_t = __uid_t;
 pub type pid_t = __pid_t;
-pub type id_t = __id_t;
-pub type daddr_t = __daddr_t;
-pub type caddr_t = __caddr_t;
-pub type key_t = __key_t;
-pub type clock_t = __clock_t;
-pub type clockid_t = __clockid_t;
-pub type time_t = __time_t;
-pub type timer_t = __timer_t;
-pub type ulong = ::core::ffi::c_ulong;
-pub type ushort = ::core::ffi::c_ushort;
-pub type uint = ::core::ffi::c_uint;
-pub type u_int8_t = __uint8_t;
-pub type u_int16_t = __uint16_t;
-pub type u_int32_t = __uint32_t;
-pub type u_int64_t = __uint64_t;
-pub type register_t = ::core::ffi::c_long;
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct __sigset_t {
     pub __val: [::core::ffi::c_ulong; 16usize],
 }
-pub type sigset_t = __sigset_t;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct timeval {
-    pub tv_sec: __time_t,
-    pub tv_usec: __suseconds_t,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct timespec {
-    pub tv_sec: __time_t,
-    pub tv_nsec: __syscall_slong_t,
-}
-pub type suseconds_t = __suseconds_t;
-pub type __fd_mask = ::core::ffi::c_long;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct fd_set {
-    pub __fds_bits: [__fd_mask; 16usize],
-}
-pub type fd_mask = __fd_mask;
-pub type blksize_t = __blksize_t;
-pub type blkcnt_t = __blkcnt_t;
-pub type fsblkcnt_t = __fsblkcnt_t;
-pub type fsfilcnt_t = __fsfilcnt_t;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union __atomic_wide_counter {
-    pub __value64: ::core::ffi::c_ulonglong,
-    pub __value32: __atomic_wide_counter__bindgen_ty_1,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct __atomic_wide_counter__bindgen_ty_1 {
-    pub __low: ::core::ffi::c_uint,
-    pub __high: ::core::ffi::c_uint,
-}
-impl Default for __atomic_wide_counter {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct __pthread_internal_list {
-    pub __prev: *mut __pthread_internal_list,
-    pub __next: *mut __pthread_internal_list,
-}
-impl Default for __pthread_internal_list {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type __pthread_list_t = __pthread_internal_list;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct __pthread_internal_slist {
-    pub __next: *mut __pthread_internal_slist,
-}
-impl Default for __pthread_internal_slist {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type __pthread_slist_t = __pthread_internal_slist;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct __pthread_mutex_s {
-    pub __lock: ::core::ffi::c_int,
-    pub __count: ::core::ffi::c_uint,
-    pub __owner: ::core::ffi::c_int,
-    pub __nusers: ::core::ffi::c_uint,
-    pub __kind: ::core::ffi::c_int,
-    pub __spins: ::core::ffi::c_short,
-    pub __elision: ::core::ffi::c_short,
-    pub __list: __pthread_list_t,
-}
-impl Default for __pthread_mutex_s {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct __pthread_rwlock_arch_t {
-    pub __readers: ::core::ffi::c_uint,
-    pub __writers: ::core::ffi::c_uint,
-    pub __wrphase_futex: ::core::ffi::c_uint,
-    pub __writers_futex: ::core::ffi::c_uint,
-    pub __pad3: ::core::ffi::c_uint,
-    pub __pad4: ::core::ffi::c_uint,
-    pub __cur_writer: ::core::ffi::c_int,
-    pub __shared: ::core::ffi::c_int,
-    pub __rwelision: ::core::ffi::c_schar,
-    pub __pad1: [::core::ffi::c_uchar; 7usize],
-    pub __pad2: ::core::ffi::c_ulong,
-    pub __flags: ::core::ffi::c_uint,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct __pthread_cond_s {
-    pub __wseq: __atomic_wide_counter,
-    pub __g1_start: __atomic_wide_counter,
-    pub __g_refs: [::core::ffi::c_uint; 2usize],
-    pub __g_size: [::core::ffi::c_uint; 2usize],
-    pub __g1_orig_size: ::core::ffi::c_uint,
-    pub __wrefs: ::core::ffi::c_uint,
-    pub __g_signals: [::core::ffi::c_uint; 2usize],
-}
-impl Default for __pthread_cond_s {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type __tss_t = ::core::ffi::c_uint;
-pub type __thrd_t = ::core::ffi::c_ulong;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct __once_flag {
-    pub __data: ::core::ffi::c_int,
-}
-pub type pthread_t = ::core::ffi::c_ulong;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_mutexattr_t {
-    pub __size: [::core::ffi::c_char; 4usize],
-    pub __align: ::core::ffi::c_int,
-}
-impl Default for pthread_mutexattr_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_condattr_t {
-    pub __size: [::core::ffi::c_char; 4usize],
-    pub __align: ::core::ffi::c_int,
-}
-impl Default for pthread_condattr_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type pthread_key_t = ::core::ffi::c_uint;
-pub type pthread_once_t = ::core::ffi::c_int;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_attr_t {
-    pub __size: [::core::ffi::c_char; 56usize],
-    pub __align: ::core::ffi::c_long,
-}
-impl Default for pthread_attr_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_mutex_t {
-    pub __data: __pthread_mutex_s,
-    pub __size: [::core::ffi::c_char; 40usize],
-    pub __align: ::core::ffi::c_long,
-}
-impl Default for pthread_mutex_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_cond_t {
-    pub __data: __pthread_cond_s,
-    pub __size: [::core::ffi::c_char; 48usize],
-    pub __align: ::core::ffi::c_longlong,
-}
-impl Default for pthread_cond_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_rwlock_t {
-    pub __data: __pthread_rwlock_arch_t,
-    pub __size: [::core::ffi::c_char; 56usize],
-    pub __align: ::core::ffi::c_long,
-}
-impl Default for pthread_rwlock_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_rwlockattr_t {
-    pub __size: [::core::ffi::c_char; 8usize],
-    pub __align: ::core::ffi::c_long,
-}
-impl Default for pthread_rwlockattr_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type pthread_spinlock_t = ::core::ffi::c_int;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_barrier_t {
-    pub __size: [::core::ffi::c_char; 32usize],
-    pub __align: ::core::ffi::c_long,
-}
-impl Default for pthread_barrier_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union pthread_barrierattr_t {
-    pub __size: [::core::ffi::c_char; 4usize],
-    pub __align: ::core::ffi::c_int,
-}
-impl Default for pthread_barrierattr_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct random_data {
-    pub fptr: *mut i32,
-    pub rptr: *mut i32,
-    pub state: *mut i32,
-    pub rand_type: ::core::ffi::c_int,
-    pub rand_deg: ::core::ffi::c_int,
-    pub rand_sep: ::core::ffi::c_int,
-    pub end_ptr: *mut i32,
-}
-impl Default for random_data {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct drand48_data {
-    pub __x: [::core::ffi::c_ushort; 3usize],
-    pub __old_x: [::core::ffi::c_ushort; 3usize],
-    pub __c: ::core::ffi::c_ushort,
-    pub __init: ::core::ffi::c_ushort,
-    pub __a: ::core::ffi::c_ulonglong,
-}
-pub type __compar_fn_t = ::core::option::Option<
-    unsafe extern "C" fn(
-        arg1: *const ::core::ffi::c_void,
-        arg2: *const ::core::ffi::c_void,
-    ) -> ::core::ffi::c_int,
->;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct __locale_struct {
-    pub __locales: [*mut __locale_data; 13usize],
-    pub __ctype_b: *const ::core::ffi::c_ushort,
-    pub __ctype_tolower: *const ::core::ffi::c_int,
-    pub __ctype_toupper: *const ::core::ffi::c_int,
-    pub __names: [*const ::core::ffi::c_char; 13usize],
-}
-impl Default for __locale_struct {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type __locale_t = *mut __locale_struct;
-pub type locale_t = __locale_t;
-#[repr(C)]
-#[repr(align(16))]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct max_align_t {
-    pub __clang_max_align_nonce1: ::core::ffi::c_longlong,
-    pub __bindgen_padding_0: u64,
-    pub __clang_max_align_nonce2: u128,
-}
-pub type int_least8_t = __int_least8_t;
-pub type int_least16_t = __int_least16_t;
-pub type int_least32_t = __int_least32_t;
-pub type int_least64_t = __int_least64_t;
-pub type uint_least8_t = __uint_least8_t;
-pub type uint_least16_t = __uint_least16_t;
-pub type uint_least32_t = __uint_least32_t;
-pub type uint_least64_t = __uint_least64_t;
-pub type int_fast8_t = ::core::ffi::c_schar;
-pub type int_fast16_t = ::core::ffi::c_long;
-pub type int_fast32_t = ::core::ffi::c_long;
-pub type int_fast64_t = ::core::ffi::c_long;
-pub type uint_fast8_t = ::core::ffi::c_uchar;
-pub type uint_fast16_t = ::core::ffi::c_ulong;
-pub type uint_fast32_t = ::core::ffi::c_ulong;
-pub type uint_fast64_t = ::core::ffi::c_ulong;
-pub type intmax_t = __intmax_t;
-pub type uintmax_t = __uintmax_t;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct lconv {
-    pub decimal_point: *mut ::core::ffi::c_char,
-    pub thousands_sep: *mut ::core::ffi::c_char,
-    pub grouping: *mut ::core::ffi::c_char,
-    pub int_curr_symbol: *mut ::core::ffi::c_char,
-    pub currency_symbol: *mut ::core::ffi::c_char,
-    pub mon_decimal_point: *mut ::core::ffi::c_char,
-    pub mon_thousands_sep: *mut ::core::ffi::c_char,
-    pub mon_grouping: *mut ::core::ffi::c_char,
-    pub positive_sign: *mut ::core::ffi::c_char,
-    pub negative_sign: *mut ::core::ffi::c_char,
-    pub int_frac_digits: ::core::ffi::c_char,
-    pub frac_digits: ::core::ffi::c_char,
-    pub p_cs_precedes: ::core::ffi::c_char,
-    pub p_sep_by_space: ::core::ffi::c_char,
-    pub n_cs_precedes: ::core::ffi::c_char,
-    pub n_sep_by_space: ::core::ffi::c_char,
-    pub p_sign_posn: ::core::ffi::c_char,
-    pub n_sign_posn: ::core::ffi::c_char,
-    pub int_p_cs_precedes: ::core::ffi::c_char,
-    pub int_p_sep_by_space: ::core::ffi::c_char,
-    pub int_n_cs_precedes: ::core::ffi::c_char,
-    pub int_n_sep_by_space: ::core::ffi::c_char,
-    pub int_p_sign_posn: ::core::ffi::c_char,
-    pub int_n_sign_posn: ::core::ffi::c_char,
-}
-impl Default for lconv {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type pg_funcptr_t = ::core::option::Option<unsafe extern "C" fn()>;
+pub type pg_funcptr_t = ::core::option::Option<unsafe extern "C-unwind" fn()>;
 pub type Pointer = *mut ::core::ffi::c_char;
 pub type int8 = ::core::ffi::c_schar;
 pub type int16 = ::core::ffi::c_short;
@@ -7831,10 +6086,8 @@ pub type float4 = f32;
 pub type float8 = f64;
 pub type regproc = Oid;
 pub type RegProcedure = regproc;
-pub type TransactionId = uint32;
 pub type LocalTransactionId = uint32;
 pub type SubTransactionId = uint32;
-pub type MultiXactId = TransactionId;
 pub type MultiXactOffset = uint32;
 pub type CommandId = uint32;
 #[repr(C)]
@@ -7953,41 +6206,16 @@ impl Default for PGAlignedXLogBlock {
         }
     }
 }
-pub mod _bindgen_ty_1 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const _ISupper: Type = 256;
-    pub const _ISlower: Type = 512;
-    pub const _ISalpha: Type = 1024;
-    pub const _ISdigit: Type = 2048;
-    pub const _ISxdigit: Type = 4096;
-    pub const _ISspace: Type = 8192;
-    pub const _ISprint: Type = 16384;
-    pub const _ISgraph: Type = 32768;
-    pub const _ISblank: Type = 1;
-    pub const _IScntrl: Type = 2;
-    pub const _ISpunct: Type = 4;
-    pub const _ISalnum: Type = 8;
-}
 pub type pgsocket = ::core::ffi::c_int;
-pub type float_t = f32;
-pub type double_t = f64;
-pub mod _bindgen_ty_2 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const FP_NAN: Type = 0;
-    pub const FP_INFINITE: Type = 1;
-    pub const FP_ZERO: Type = 2;
-    pub const FP_SUBNORMAL: Type = 3;
-    pub const FP_NORMAL: Type = 4;
-}
 pub type qsort_arg_comparator = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         a: *const ::core::ffi::c_void,
         b: *const ::core::ffi::c_void,
         arg: *mut ::core::ffi::c_void,
     ) -> ::core::ffi::c_int,
 >;
 pub type pqsigfunc =
-    ::core::option::Option<unsafe extern "C" fn(postgres_signal_arg: ::core::ffi::c_int)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(postgres_signal_arg: ::core::ffi::c_int)>;
 pub type __jmp_buf = [::core::ffi::c_long; 8usize];
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -7996,7 +6224,6 @@ pub struct __jmp_buf_tag {
     pub __mask_was_saved: ::core::ffi::c_int,
     pub __saved_mask: __sigset_t,
 }
-pub type jmp_buf = [__jmp_buf_tag; 1usize];
 pub type sigjmp_buf = [__jmp_buf_tag; 1usize];
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -8020,7 +6247,8 @@ pub type StringInfo = *mut StringInfoData;
 #[derive(Debug, Copy, Clone)]
 pub struct ErrorContextCallback {
     pub previous: *mut ErrorContextCallback,
-    pub callback: ::core::option::Option<unsafe extern "C" fn(arg: *mut ::core::ffi::c_void)>,
+    pub callback:
+        ::core::option::Option<unsafe extern "C-unwind" fn(arg: *mut ::core::ffi::c_void)>,
     pub arg: *mut ::core::ffi::c_void,
 }
 impl Default for ErrorContextCallback {
@@ -8073,7 +6301,8 @@ impl Default for ErrorData {
         }
     }
 }
-pub type emit_log_hook_type = ::core::option::Option<unsafe extern "C" fn(edata: *mut ErrorData)>;
+pub type emit_log_hook_type =
+    ::core::option::Option<unsafe extern "C-unwind" fn(edata: *mut ErrorData)>;
 pub mod PGErrorVerbosity {
     pub type Type = ::core::ffi::c_uint;
     pub const PGERROR_TERSE: Type = 0;
@@ -8082,7 +6311,7 @@ pub mod PGErrorVerbosity {
 }
 pub type MemoryContext = *mut MemoryContextData;
 pub type MemoryContextCallbackFunction =
-    ::core::option::Option<unsafe extern "C" fn(arg: *mut ::core::ffi::c_void)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(arg: *mut ::core::ffi::c_void)>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct MemoryContextCallback {
@@ -8859,7 +7088,7 @@ impl Default for ForFiveState {
     }
 }
 pub type list_sort_comparator = ::core::option::Option<
-    unsafe extern "C" fn(a: *const ListCell, b: *const ListCell) -> ::core::ffi::c_int,
+    unsafe extern "C-unwind" fn(a: *const ListCell, b: *const ListCell) -> ::core::ffi::c_int,
 >;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -8976,6 +7205,28 @@ impl ItemIdData {
         }
     }
     #[inline]
+    pub unsafe fn lp_off_raw(this: *const Self) -> ::core::ffi::c_uint {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                0usize,
+                15u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_lp_off_raw(this: *mut Self, val: ::core::ffi::c_uint) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                0usize,
+                15u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn lp_flags(&self) -> ::core::ffi::c_uint {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(15usize, 2u8) as u32) }
     }
@@ -8987,6 +7238,28 @@ impl ItemIdData {
         }
     }
     #[inline]
+    pub unsafe fn lp_flags_raw(this: *const Self) -> ::core::ffi::c_uint {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                15usize,
+                2u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_lp_flags_raw(this: *mut Self, val: ::core::ffi::c_uint) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                15usize,
+                2u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn lp_len(&self) -> ::core::ffi::c_uint {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(17usize, 15u8) as u32) }
     }
@@ -8995,6 +7268,28 @@ impl ItemIdData {
         unsafe {
             let val: u32 = ::core::mem::transmute(val);
             self._bitfield_1.set(17usize, 15u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn lp_len_raw(this: *const Self) -> ::core::ffi::c_uint {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                17usize,
+                15u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_lp_len_raw(this: *mut Self, val: ::core::ffi::c_uint) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                17usize,
+                15u8,
+                val as u64,
+            )
         }
     }
     #[inline]
@@ -9051,32 +7346,19 @@ impl Default for HeapTupleData {
 }
 pub type HeapTuple = *mut HeapTupleData;
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct flock {
-    pub l_type: ::core::ffi::c_short,
-    pub l_whence: ::core::ffi::c_short,
-    pub l_start: __off_t,
-    pub l_len: __off_t,
-    pub l_pid: __pid_t,
+#[derive(Debug, Copy, Clone)]
+pub struct iovec {
+    pub iov_base: *mut ::core::ffi::c_void,
+    pub iov_len: usize,
 }
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct stat {
-    pub st_dev: __dev_t,
-    pub st_ino: __ino_t,
-    pub st_nlink: __nlink_t,
-    pub st_mode: __mode_t,
-    pub st_uid: __uid_t,
-    pub st_gid: __gid_t,
-    pub __pad0: ::core::ffi::c_int,
-    pub st_rdev: __dev_t,
-    pub st_size: __off_t,
-    pub st_blksize: __blksize_t,
-    pub st_blocks: __blkcnt_t,
-    pub st_atim: timespec,
-    pub st_mtim: timespec,
-    pub st_ctim: timespec,
-    pub __glibc_reserved: [__syscall_slong_t; 3usize],
+impl Default for iovec {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 pub type XLogRecPtr = uint64;
 pub type XLogSegNo = uint64;
@@ -9124,7 +7406,7 @@ pub struct PageXLogRecPtr {
     pub xrecoff: uint32,
 }
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PageHeaderData {
     pub pd_lsn: PageXLogRecPtr,
     pub pd_checksum: uint16,
@@ -9135,6 +7417,15 @@ pub struct PageHeaderData {
     pub pd_pagesize_version: uint16,
     pub pd_prune_xid: TransactionId,
     pub pd_linp: __IncompleteArrayField<ItemIdData>,
+}
+impl Default for PageHeaderData {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 pub type PageHeader = *mut PageHeaderData;
 #[repr(C)]
@@ -9353,33 +7644,35 @@ impl Default for TupleTableSlot {
 #[derive(Debug, Default, Copy, Clone)]
 pub struct TupleTableSlotOps {
     pub base_slot_size: usize,
-    pub init: ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot)>,
-    pub release: ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot)>,
-    pub clear: ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot)>,
+    pub init: ::core::option::Option<unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot)>,
+    pub release: ::core::option::Option<unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot)>,
+    pub clear: ::core::option::Option<unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot)>,
     pub getsomeattrs: ::core::option::Option<
-        unsafe extern "C" fn(slot: *mut TupleTableSlot, natts: ::core::ffi::c_int),
+        unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot, natts: ::core::ffi::c_int),
     >,
     pub getsysattr: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             slot: *mut TupleTableSlot,
             attnum: ::core::ffi::c_int,
             isnull: *mut bool,
         ) -> Datum,
     >,
     pub is_current_xact_tuple:
-        ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot) -> bool>,
-    pub materialize: ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot)>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot) -> bool>,
+    pub materialize: ::core::option::Option<unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot)>,
     pub copyslot: ::core::option::Option<
-        unsafe extern "C" fn(dstslot: *mut TupleTableSlot, srcslot: *mut TupleTableSlot),
+        unsafe extern "C-unwind" fn(dstslot: *mut TupleTableSlot, srcslot: *mut TupleTableSlot),
     >,
     pub get_heap_tuple:
-        ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot) -> HeapTuple>,
-    pub get_minimal_tuple:
-        ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot) -> MinimalTuple>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot) -> HeapTuple>,
+    pub get_minimal_tuple: ::core::option::Option<
+        unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot) -> MinimalTuple,
+    >,
     pub copy_heap_tuple:
-        ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot) -> HeapTuple>,
-    pub copy_minimal_tuple:
-        ::core::option::Option<unsafe extern "C" fn(slot: *mut TupleTableSlot) -> MinimalTuple>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot) -> HeapTuple>,
+    pub copy_minimal_tuple: ::core::option::Option<
+        unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot) -> MinimalTuple,
+    >,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -9503,36 +7796,6 @@ pub struct instr_time {
     pub ticks: int64,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct tm {
-    pub tm_sec: ::core::ffi::c_int,
-    pub tm_min: ::core::ffi::c_int,
-    pub tm_hour: ::core::ffi::c_int,
-    pub tm_mday: ::core::ffi::c_int,
-    pub tm_mon: ::core::ffi::c_int,
-    pub tm_year: ::core::ffi::c_int,
-    pub tm_wday: ::core::ffi::c_int,
-    pub tm_yday: ::core::ffi::c_int,
-    pub tm_isdst: ::core::ffi::c_int,
-    pub tm_gmtoff: ::core::ffi::c_long,
-    pub tm_zone: *const ::core::ffi::c_char,
-}
-impl Default for tm {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct itimerspec {
-    pub it_interval: timespec,
-    pub it_value: timespec,
-}
-#[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct BufferUsage {
     pub shared_blks_hit: int64,
@@ -9599,11 +7862,12 @@ pub struct WorkerInstrumentation {
 }
 pub type fmNodePtr = *mut Node;
 pub type fmAggrefPtr = *mut Aggref;
-pub type fmExprContextCallbackFunction = ::core::option::Option<unsafe extern "C" fn(arg: Datum)>;
+pub type fmExprContextCallbackFunction =
+    ::core::option::Option<unsafe extern "C-unwind" fn(arg: Datum)>;
 pub type fmStringInfo = *mut StringInfoData;
 pub type FunctionCallInfo = *mut FunctionCallInfoBaseData;
 pub type PGFunction =
-    ::core::option::Option<unsafe extern "C" fn(fcinfo: FunctionCallInfo) -> Datum>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(fcinfo: FunctionCallInfo) -> Datum>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct FmgrInfo {
@@ -9651,7 +7915,8 @@ impl Default for FunctionCallInfoBaseData {
 pub struct Pg_finfo_record {
     pub api_version: ::core::ffi::c_int,
 }
-pub type PGFInfoFunction = ::core::option::Option<unsafe extern "C" fn() -> *const Pg_finfo_record>;
+pub type PGFInfoFunction =
+    ::core::option::Option<unsafe extern "C-unwind" fn() -> *const Pg_finfo_record>;
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct Pg_magic_struct {
@@ -9664,16 +7929,21 @@ pub struct Pg_magic_struct {
     pub abi_extra: [::core::ffi::c_char; 32usize],
 }
 pub type PGModuleMagicFunction =
-    ::core::option::Option<unsafe extern "C" fn() -> *const Pg_magic_struct>;
+    ::core::option::Option<unsafe extern "C-unwind" fn() -> *const Pg_magic_struct>;
 pub mod FmgrHookEventType {
     pub type Type = ::core::ffi::c_uint;
     pub const FHET_START: Type = 0;
     pub const FHET_END: Type = 1;
     pub const FHET_ABORT: Type = 2;
 }
-pub type needs_fmgr_hook_type = ::core::option::Option<unsafe extern "C" fn(fn_oid: Oid) -> bool>;
+pub type needs_fmgr_hook_type =
+    ::core::option::Option<unsafe extern "C-unwind" fn(fn_oid: Oid) -> bool>;
 pub type fmgr_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(event: FmgrHookEventType::Type, flinfo: *mut FmgrInfo, arg: *mut Datum),
+    unsafe extern "C-unwind" fn(
+        event: FmgrHookEventType::Type,
+        flinfo: *mut FmgrInfo,
+        arg: *mut Datum,
+    ),
 >;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -9825,7 +8095,7 @@ impl Default for pairingheap_node {
     }
 }
 pub type pairingheap_comparator = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         a: *const pairingheap_node,
         b: *const pairingheap_node,
         arg: *mut ::core::ffi::c_void,
@@ -9883,7 +8153,7 @@ impl Default for ParamExternData {
 }
 pub type ParamListInfo = *mut ParamListInfoData;
 pub type ParamFetchHook = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         params: ParamListInfo,
         paramid: ::core::ffi::c_int,
         speculative: bool,
@@ -9891,7 +8161,7 @@ pub type ParamFetchHook = ::core::option::Option<
     ) -> *mut ParamExternData,
 >;
 pub type ParamCompileHook = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         params: ParamListInfo,
         param: *mut Param,
         state: *mut ExprState,
@@ -9900,7 +8170,7 @@ pub type ParamCompileHook = ::core::option::Option<
     ),
 >;
 pub type ParserSetupHook = ::core::option::Option<
-    unsafe extern "C" fn(pstate: *mut ParseState, arg: *mut ::core::ffi::c_void),
+    unsafe extern "C-unwind" fn(pstate: *mut ParseState, arg: *mut ::core::ffi::c_void),
 >;
 #[repr(C)]
 #[derive(Debug)]
@@ -12518,7 +10788,7 @@ pub struct PGShmemHeader {
     _unused: [u8; 0],
 }
 pub type on_dsm_detach_callback =
-    ::core::option::Option<unsafe extern "C" fn(arg1: *mut dsm_segment, arg: Datum)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(arg1: *mut dsm_segment, arg: Datum)>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct dsa_area {
@@ -12550,11 +10820,6 @@ pub struct TBMIterateResult {
     pub recheck: bool,
     pub offsets: __IncompleteArrayField<OffsetNumber>,
 }
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct PartitionBoundInfoData {
-    _unused: [u8; 0],
-}
 pub type PartitionBoundInfo = *mut PartitionBoundInfoData;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -12562,11 +10827,6 @@ pub struct PartitionKeyData {
     _unused: [u8; 0],
 }
 pub type PartitionKey = *mut PartitionKeyData;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct PartitionDescData {
-    _unused: [u8; 0],
-}
 pub type PartitionDesc = *mut PartitionDescData;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -12635,24 +10895,24 @@ impl Default for ConditionVariableMinimallyPadded {
     }
 }
 pub type HashValueFunc = ::core::option::Option<
-    unsafe extern "C" fn(key: *const ::core::ffi::c_void, keysize: Size) -> uint32,
+    unsafe extern "C-unwind" fn(key: *const ::core::ffi::c_void, keysize: Size) -> uint32,
 >;
 pub type HashCompareFunc = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         key1: *const ::core::ffi::c_void,
         key2: *const ::core::ffi::c_void,
         keysize: Size,
     ) -> ::core::ffi::c_int,
 >;
 pub type HashCopyFunc = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         dest: *mut ::core::ffi::c_void,
         src: *const ::core::ffi::c_void,
         keysize: Size,
     ) -> *mut ::core::ffi::c_void,
 >;
 pub type HashAllocFunc =
-    ::core::option::Option<unsafe extern "C" fn(request: Size) -> *mut ::core::ffi::c_void>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(request: Size) -> *mut ::core::ffi::c_void>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct HASHELEMENT {
@@ -12838,334 +11098,7 @@ impl Default for TriggerDesc {
         }
     }
 }
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct iovec {
-    pub iov_base: *mut ::core::ffi::c_void,
-    pub iov_len: usize,
-}
-impl Default for iovec {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type useconds_t = __useconds_t;
 pub type socklen_t = __socklen_t;
-pub mod _bindgen_ty_3 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const _PC_LINK_MAX: Type = 0;
-    pub const _PC_MAX_CANON: Type = 1;
-    pub const _PC_MAX_INPUT: Type = 2;
-    pub const _PC_NAME_MAX: Type = 3;
-    pub const _PC_PATH_MAX: Type = 4;
-    pub const _PC_PIPE_BUF: Type = 5;
-    pub const _PC_CHOWN_RESTRICTED: Type = 6;
-    pub const _PC_NO_TRUNC: Type = 7;
-    pub const _PC_VDISABLE: Type = 8;
-    pub const _PC_SYNC_IO: Type = 9;
-    pub const _PC_ASYNC_IO: Type = 10;
-    pub const _PC_PRIO_IO: Type = 11;
-    pub const _PC_SOCK_MAXBUF: Type = 12;
-    pub const _PC_FILESIZEBITS: Type = 13;
-    pub const _PC_REC_INCR_XFER_SIZE: Type = 14;
-    pub const _PC_REC_MAX_XFER_SIZE: Type = 15;
-    pub const _PC_REC_MIN_XFER_SIZE: Type = 16;
-    pub const _PC_REC_XFER_ALIGN: Type = 17;
-    pub const _PC_ALLOC_SIZE_MIN: Type = 18;
-    pub const _PC_SYMLINK_MAX: Type = 19;
-    pub const _PC_2_SYMLINKS: Type = 20;
-}
-pub mod _bindgen_ty_4 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const _SC_ARG_MAX: Type = 0;
-    pub const _SC_CHILD_MAX: Type = 1;
-    pub const _SC_CLK_TCK: Type = 2;
-    pub const _SC_NGROUPS_MAX: Type = 3;
-    pub const _SC_OPEN_MAX: Type = 4;
-    pub const _SC_STREAM_MAX: Type = 5;
-    pub const _SC_TZNAME_MAX: Type = 6;
-    pub const _SC_JOB_CONTROL: Type = 7;
-    pub const _SC_SAVED_IDS: Type = 8;
-    pub const _SC_REALTIME_SIGNALS: Type = 9;
-    pub const _SC_PRIORITY_SCHEDULING: Type = 10;
-    pub const _SC_TIMERS: Type = 11;
-    pub const _SC_ASYNCHRONOUS_IO: Type = 12;
-    pub const _SC_PRIORITIZED_IO: Type = 13;
-    pub const _SC_SYNCHRONIZED_IO: Type = 14;
-    pub const _SC_FSYNC: Type = 15;
-    pub const _SC_MAPPED_FILES: Type = 16;
-    pub const _SC_MEMLOCK: Type = 17;
-    pub const _SC_MEMLOCK_RANGE: Type = 18;
-    pub const _SC_MEMORY_PROTECTION: Type = 19;
-    pub const _SC_MESSAGE_PASSING: Type = 20;
-    pub const _SC_SEMAPHORES: Type = 21;
-    pub const _SC_SHARED_MEMORY_OBJECTS: Type = 22;
-    pub const _SC_AIO_LISTIO_MAX: Type = 23;
-    pub const _SC_AIO_MAX: Type = 24;
-    pub const _SC_AIO_PRIO_DELTA_MAX: Type = 25;
-    pub const _SC_DELAYTIMER_MAX: Type = 26;
-    pub const _SC_MQ_OPEN_MAX: Type = 27;
-    pub const _SC_MQ_PRIO_MAX: Type = 28;
-    pub const _SC_VERSION: Type = 29;
-    pub const _SC_PAGESIZE: Type = 30;
-    pub const _SC_RTSIG_MAX: Type = 31;
-    pub const _SC_SEM_NSEMS_MAX: Type = 32;
-    pub const _SC_SEM_VALUE_MAX: Type = 33;
-    pub const _SC_SIGQUEUE_MAX: Type = 34;
-    pub const _SC_TIMER_MAX: Type = 35;
-    pub const _SC_BC_BASE_MAX: Type = 36;
-    pub const _SC_BC_DIM_MAX: Type = 37;
-    pub const _SC_BC_SCALE_MAX: Type = 38;
-    pub const _SC_BC_STRING_MAX: Type = 39;
-    pub const _SC_COLL_WEIGHTS_MAX: Type = 40;
-    pub const _SC_EQUIV_CLASS_MAX: Type = 41;
-    pub const _SC_EXPR_NEST_MAX: Type = 42;
-    pub const _SC_LINE_MAX: Type = 43;
-    pub const _SC_RE_DUP_MAX: Type = 44;
-    pub const _SC_CHARCLASS_NAME_MAX: Type = 45;
-    pub const _SC_2_VERSION: Type = 46;
-    pub const _SC_2_C_BIND: Type = 47;
-    pub const _SC_2_C_DEV: Type = 48;
-    pub const _SC_2_FORT_DEV: Type = 49;
-    pub const _SC_2_FORT_RUN: Type = 50;
-    pub const _SC_2_SW_DEV: Type = 51;
-    pub const _SC_2_LOCALEDEF: Type = 52;
-    pub const _SC_PII: Type = 53;
-    pub const _SC_PII_XTI: Type = 54;
-    pub const _SC_PII_SOCKET: Type = 55;
-    pub const _SC_PII_INTERNET: Type = 56;
-    pub const _SC_PII_OSI: Type = 57;
-    pub const _SC_POLL: Type = 58;
-    pub const _SC_SELECT: Type = 59;
-    pub const _SC_UIO_MAXIOV: Type = 60;
-    pub const _SC_IOV_MAX: Type = 60;
-    pub const _SC_PII_INTERNET_STREAM: Type = 61;
-    pub const _SC_PII_INTERNET_DGRAM: Type = 62;
-    pub const _SC_PII_OSI_COTS: Type = 63;
-    pub const _SC_PII_OSI_CLTS: Type = 64;
-    pub const _SC_PII_OSI_M: Type = 65;
-    pub const _SC_T_IOV_MAX: Type = 66;
-    pub const _SC_THREADS: Type = 67;
-    pub const _SC_THREAD_SAFE_FUNCTIONS: Type = 68;
-    pub const _SC_GETGR_R_SIZE_MAX: Type = 69;
-    pub const _SC_GETPW_R_SIZE_MAX: Type = 70;
-    pub const _SC_LOGIN_NAME_MAX: Type = 71;
-    pub const _SC_TTY_NAME_MAX: Type = 72;
-    pub const _SC_THREAD_DESTRUCTOR_ITERATIONS: Type = 73;
-    pub const _SC_THREAD_KEYS_MAX: Type = 74;
-    pub const _SC_THREAD_STACK_MIN: Type = 75;
-    pub const _SC_THREAD_THREADS_MAX: Type = 76;
-    pub const _SC_THREAD_ATTR_STACKADDR: Type = 77;
-    pub const _SC_THREAD_ATTR_STACKSIZE: Type = 78;
-    pub const _SC_THREAD_PRIORITY_SCHEDULING: Type = 79;
-    pub const _SC_THREAD_PRIO_INHERIT: Type = 80;
-    pub const _SC_THREAD_PRIO_PROTECT: Type = 81;
-    pub const _SC_THREAD_PROCESS_SHARED: Type = 82;
-    pub const _SC_NPROCESSORS_CONF: Type = 83;
-    pub const _SC_NPROCESSORS_ONLN: Type = 84;
-    pub const _SC_PHYS_PAGES: Type = 85;
-    pub const _SC_AVPHYS_PAGES: Type = 86;
-    pub const _SC_ATEXIT_MAX: Type = 87;
-    pub const _SC_PASS_MAX: Type = 88;
-    pub const _SC_XOPEN_VERSION: Type = 89;
-    pub const _SC_XOPEN_XCU_VERSION: Type = 90;
-    pub const _SC_XOPEN_UNIX: Type = 91;
-    pub const _SC_XOPEN_CRYPT: Type = 92;
-    pub const _SC_XOPEN_ENH_I18N: Type = 93;
-    pub const _SC_XOPEN_SHM: Type = 94;
-    pub const _SC_2_CHAR_TERM: Type = 95;
-    pub const _SC_2_C_VERSION: Type = 96;
-    pub const _SC_2_UPE: Type = 97;
-    pub const _SC_XOPEN_XPG2: Type = 98;
-    pub const _SC_XOPEN_XPG3: Type = 99;
-    pub const _SC_XOPEN_XPG4: Type = 100;
-    pub const _SC_CHAR_BIT: Type = 101;
-    pub const _SC_CHAR_MAX: Type = 102;
-    pub const _SC_CHAR_MIN: Type = 103;
-    pub const _SC_INT_MAX: Type = 104;
-    pub const _SC_INT_MIN: Type = 105;
-    pub const _SC_LONG_BIT: Type = 106;
-    pub const _SC_WORD_BIT: Type = 107;
-    pub const _SC_MB_LEN_MAX: Type = 108;
-    pub const _SC_NZERO: Type = 109;
-    pub const _SC_SSIZE_MAX: Type = 110;
-    pub const _SC_SCHAR_MAX: Type = 111;
-    pub const _SC_SCHAR_MIN: Type = 112;
-    pub const _SC_SHRT_MAX: Type = 113;
-    pub const _SC_SHRT_MIN: Type = 114;
-    pub const _SC_UCHAR_MAX: Type = 115;
-    pub const _SC_UINT_MAX: Type = 116;
-    pub const _SC_ULONG_MAX: Type = 117;
-    pub const _SC_USHRT_MAX: Type = 118;
-    pub const _SC_NL_ARGMAX: Type = 119;
-    pub const _SC_NL_LANGMAX: Type = 120;
-    pub const _SC_NL_MSGMAX: Type = 121;
-    pub const _SC_NL_NMAX: Type = 122;
-    pub const _SC_NL_SETMAX: Type = 123;
-    pub const _SC_NL_TEXTMAX: Type = 124;
-    pub const _SC_XBS5_ILP32_OFF32: Type = 125;
-    pub const _SC_XBS5_ILP32_OFFBIG: Type = 126;
-    pub const _SC_XBS5_LP64_OFF64: Type = 127;
-    pub const _SC_XBS5_LPBIG_OFFBIG: Type = 128;
-    pub const _SC_XOPEN_LEGACY: Type = 129;
-    pub const _SC_XOPEN_REALTIME: Type = 130;
-    pub const _SC_XOPEN_REALTIME_THREADS: Type = 131;
-    pub const _SC_ADVISORY_INFO: Type = 132;
-    pub const _SC_BARRIERS: Type = 133;
-    pub const _SC_BASE: Type = 134;
-    pub const _SC_C_LANG_SUPPORT: Type = 135;
-    pub const _SC_C_LANG_SUPPORT_R: Type = 136;
-    pub const _SC_CLOCK_SELECTION: Type = 137;
-    pub const _SC_CPUTIME: Type = 138;
-    pub const _SC_THREAD_CPUTIME: Type = 139;
-    pub const _SC_DEVICE_IO: Type = 140;
-    pub const _SC_DEVICE_SPECIFIC: Type = 141;
-    pub const _SC_DEVICE_SPECIFIC_R: Type = 142;
-    pub const _SC_FD_MGMT: Type = 143;
-    pub const _SC_FIFO: Type = 144;
-    pub const _SC_PIPE: Type = 145;
-    pub const _SC_FILE_ATTRIBUTES: Type = 146;
-    pub const _SC_FILE_LOCKING: Type = 147;
-    pub const _SC_FILE_SYSTEM: Type = 148;
-    pub const _SC_MONOTONIC_CLOCK: Type = 149;
-    pub const _SC_MULTI_PROCESS: Type = 150;
-    pub const _SC_SINGLE_PROCESS: Type = 151;
-    pub const _SC_NETWORKING: Type = 152;
-    pub const _SC_READER_WRITER_LOCKS: Type = 153;
-    pub const _SC_SPIN_LOCKS: Type = 154;
-    pub const _SC_REGEXP: Type = 155;
-    pub const _SC_REGEX_VERSION: Type = 156;
-    pub const _SC_SHELL: Type = 157;
-    pub const _SC_SIGNALS: Type = 158;
-    pub const _SC_SPAWN: Type = 159;
-    pub const _SC_SPORADIC_SERVER: Type = 160;
-    pub const _SC_THREAD_SPORADIC_SERVER: Type = 161;
-    pub const _SC_SYSTEM_DATABASE: Type = 162;
-    pub const _SC_SYSTEM_DATABASE_R: Type = 163;
-    pub const _SC_TIMEOUTS: Type = 164;
-    pub const _SC_TYPED_MEMORY_OBJECTS: Type = 165;
-    pub const _SC_USER_GROUPS: Type = 166;
-    pub const _SC_USER_GROUPS_R: Type = 167;
-    pub const _SC_2_PBS: Type = 168;
-    pub const _SC_2_PBS_ACCOUNTING: Type = 169;
-    pub const _SC_2_PBS_LOCATE: Type = 170;
-    pub const _SC_2_PBS_MESSAGE: Type = 171;
-    pub const _SC_2_PBS_TRACK: Type = 172;
-    pub const _SC_SYMLOOP_MAX: Type = 173;
-    pub const _SC_STREAMS: Type = 174;
-    pub const _SC_2_PBS_CHECKPOINT: Type = 175;
-    pub const _SC_V6_ILP32_OFF32: Type = 176;
-    pub const _SC_V6_ILP32_OFFBIG: Type = 177;
-    pub const _SC_V6_LP64_OFF64: Type = 178;
-    pub const _SC_V6_LPBIG_OFFBIG: Type = 179;
-    pub const _SC_HOST_NAME_MAX: Type = 180;
-    pub const _SC_TRACE: Type = 181;
-    pub const _SC_TRACE_EVENT_FILTER: Type = 182;
-    pub const _SC_TRACE_INHERIT: Type = 183;
-    pub const _SC_TRACE_LOG: Type = 184;
-    pub const _SC_LEVEL1_ICACHE_SIZE: Type = 185;
-    pub const _SC_LEVEL1_ICACHE_ASSOC: Type = 186;
-    pub const _SC_LEVEL1_ICACHE_LINESIZE: Type = 187;
-    pub const _SC_LEVEL1_DCACHE_SIZE: Type = 188;
-    pub const _SC_LEVEL1_DCACHE_ASSOC: Type = 189;
-    pub const _SC_LEVEL1_DCACHE_LINESIZE: Type = 190;
-    pub const _SC_LEVEL2_CACHE_SIZE: Type = 191;
-    pub const _SC_LEVEL2_CACHE_ASSOC: Type = 192;
-    pub const _SC_LEVEL2_CACHE_LINESIZE: Type = 193;
-    pub const _SC_LEVEL3_CACHE_SIZE: Type = 194;
-    pub const _SC_LEVEL3_CACHE_ASSOC: Type = 195;
-    pub const _SC_LEVEL3_CACHE_LINESIZE: Type = 196;
-    pub const _SC_LEVEL4_CACHE_SIZE: Type = 197;
-    pub const _SC_LEVEL4_CACHE_ASSOC: Type = 198;
-    pub const _SC_LEVEL4_CACHE_LINESIZE: Type = 199;
-    pub const _SC_IPV6: Type = 235;
-    pub const _SC_RAW_SOCKETS: Type = 236;
-    pub const _SC_V7_ILP32_OFF32: Type = 237;
-    pub const _SC_V7_ILP32_OFFBIG: Type = 238;
-    pub const _SC_V7_LP64_OFF64: Type = 239;
-    pub const _SC_V7_LPBIG_OFFBIG: Type = 240;
-    pub const _SC_SS_REPL_MAX: Type = 241;
-    pub const _SC_TRACE_EVENT_NAME_MAX: Type = 242;
-    pub const _SC_TRACE_NAME_MAX: Type = 243;
-    pub const _SC_TRACE_SYS_MAX: Type = 244;
-    pub const _SC_TRACE_USER_EVENT_MAX: Type = 245;
-    pub const _SC_XOPEN_STREAMS: Type = 246;
-    pub const _SC_THREAD_ROBUST_PRIO_INHERIT: Type = 247;
-    pub const _SC_THREAD_ROBUST_PRIO_PROTECT: Type = 248;
-    pub const _SC_MINSIGSTKSZ: Type = 249;
-    pub const _SC_SIGSTKSZ: Type = 250;
-}
-pub mod _bindgen_ty_5 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const _CS_PATH: Type = 0;
-    pub const _CS_V6_WIDTH_RESTRICTED_ENVS: Type = 1;
-    pub const _CS_GNU_LIBC_VERSION: Type = 2;
-    pub const _CS_GNU_LIBPTHREAD_VERSION: Type = 3;
-    pub const _CS_V5_WIDTH_RESTRICTED_ENVS: Type = 4;
-    pub const _CS_V7_WIDTH_RESTRICTED_ENVS: Type = 5;
-    pub const _CS_LFS_CFLAGS: Type = 1000;
-    pub const _CS_LFS_LDFLAGS: Type = 1001;
-    pub const _CS_LFS_LIBS: Type = 1002;
-    pub const _CS_LFS_LINTFLAGS: Type = 1003;
-    pub const _CS_LFS64_CFLAGS: Type = 1004;
-    pub const _CS_LFS64_LDFLAGS: Type = 1005;
-    pub const _CS_LFS64_LIBS: Type = 1006;
-    pub const _CS_LFS64_LINTFLAGS: Type = 1007;
-    pub const _CS_XBS5_ILP32_OFF32_CFLAGS: Type = 1100;
-    pub const _CS_XBS5_ILP32_OFF32_LDFLAGS: Type = 1101;
-    pub const _CS_XBS5_ILP32_OFF32_LIBS: Type = 1102;
-    pub const _CS_XBS5_ILP32_OFF32_LINTFLAGS: Type = 1103;
-    pub const _CS_XBS5_ILP32_OFFBIG_CFLAGS: Type = 1104;
-    pub const _CS_XBS5_ILP32_OFFBIG_LDFLAGS: Type = 1105;
-    pub const _CS_XBS5_ILP32_OFFBIG_LIBS: Type = 1106;
-    pub const _CS_XBS5_ILP32_OFFBIG_LINTFLAGS: Type = 1107;
-    pub const _CS_XBS5_LP64_OFF64_CFLAGS: Type = 1108;
-    pub const _CS_XBS5_LP64_OFF64_LDFLAGS: Type = 1109;
-    pub const _CS_XBS5_LP64_OFF64_LIBS: Type = 1110;
-    pub const _CS_XBS5_LP64_OFF64_LINTFLAGS: Type = 1111;
-    pub const _CS_XBS5_LPBIG_OFFBIG_CFLAGS: Type = 1112;
-    pub const _CS_XBS5_LPBIG_OFFBIG_LDFLAGS: Type = 1113;
-    pub const _CS_XBS5_LPBIG_OFFBIG_LIBS: Type = 1114;
-    pub const _CS_XBS5_LPBIG_OFFBIG_LINTFLAGS: Type = 1115;
-    pub const _CS_POSIX_V6_ILP32_OFF32_CFLAGS: Type = 1116;
-    pub const _CS_POSIX_V6_ILP32_OFF32_LDFLAGS: Type = 1117;
-    pub const _CS_POSIX_V6_ILP32_OFF32_LIBS: Type = 1118;
-    pub const _CS_POSIX_V6_ILP32_OFF32_LINTFLAGS: Type = 1119;
-    pub const _CS_POSIX_V6_ILP32_OFFBIG_CFLAGS: Type = 1120;
-    pub const _CS_POSIX_V6_ILP32_OFFBIG_LDFLAGS: Type = 1121;
-    pub const _CS_POSIX_V6_ILP32_OFFBIG_LIBS: Type = 1122;
-    pub const _CS_POSIX_V6_ILP32_OFFBIG_LINTFLAGS: Type = 1123;
-    pub const _CS_POSIX_V6_LP64_OFF64_CFLAGS: Type = 1124;
-    pub const _CS_POSIX_V6_LP64_OFF64_LDFLAGS: Type = 1125;
-    pub const _CS_POSIX_V6_LP64_OFF64_LIBS: Type = 1126;
-    pub const _CS_POSIX_V6_LP64_OFF64_LINTFLAGS: Type = 1127;
-    pub const _CS_POSIX_V6_LPBIG_OFFBIG_CFLAGS: Type = 1128;
-    pub const _CS_POSIX_V6_LPBIG_OFFBIG_LDFLAGS: Type = 1129;
-    pub const _CS_POSIX_V6_LPBIG_OFFBIG_LIBS: Type = 1130;
-    pub const _CS_POSIX_V6_LPBIG_OFFBIG_LINTFLAGS: Type = 1131;
-    pub const _CS_POSIX_V7_ILP32_OFF32_CFLAGS: Type = 1132;
-    pub const _CS_POSIX_V7_ILP32_OFF32_LDFLAGS: Type = 1133;
-    pub const _CS_POSIX_V7_ILP32_OFF32_LIBS: Type = 1134;
-    pub const _CS_POSIX_V7_ILP32_OFF32_LINTFLAGS: Type = 1135;
-    pub const _CS_POSIX_V7_ILP32_OFFBIG_CFLAGS: Type = 1136;
-    pub const _CS_POSIX_V7_ILP32_OFFBIG_LDFLAGS: Type = 1137;
-    pub const _CS_POSIX_V7_ILP32_OFFBIG_LIBS: Type = 1138;
-    pub const _CS_POSIX_V7_ILP32_OFFBIG_LINTFLAGS: Type = 1139;
-    pub const _CS_POSIX_V7_LP64_OFF64_CFLAGS: Type = 1140;
-    pub const _CS_POSIX_V7_LP64_OFF64_LDFLAGS: Type = 1141;
-    pub const _CS_POSIX_V7_LP64_OFF64_LIBS: Type = 1142;
-    pub const _CS_POSIX_V7_LP64_OFF64_LINTFLAGS: Type = 1143;
-    pub const _CS_POSIX_V7_LPBIG_OFFBIG_CFLAGS: Type = 1144;
-    pub const _CS_POSIX_V7_LPBIG_OFFBIG_LDFLAGS: Type = 1145;
-    pub const _CS_POSIX_V7_LPBIG_OFFBIG_LIBS: Type = 1146;
-    pub const _CS_POSIX_V7_LPBIG_OFFBIG_LINTFLAGS: Type = 1147;
-    pub const _CS_V6_ENV: Type = 1148;
-    pub const _CS_V7_ENV: Type = 1149;
-}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct dirent {
@@ -13183,18 +11116,6 @@ impl Default for dirent {
             s.assume_init()
         }
     }
-}
-pub mod _bindgen_ty_6 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const DT_UNKNOWN: Type = 0;
-    pub const DT_FIFO: Type = 1;
-    pub const DT_CHR: Type = 2;
-    pub const DT_DIR: Type = 4;
-    pub const DT_BLK: Type = 6;
-    pub const DT_REG: Type = 8;
-    pub const DT_LNK: Type = 10;
-    pub const DT_SOCK: Type = 12;
-    pub const DT_WHT: Type = 14;
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -13340,16 +11261,17 @@ pub struct SortSupportData {
     pub ssup_attno: AttrNumber,
     pub ssup_extra: *mut ::core::ffi::c_void,
     pub comparator: ::core::option::Option<
-        unsafe extern "C" fn(x: Datum, y: Datum, ssup: SortSupport) -> ::core::ffi::c_int,
+        unsafe extern "C-unwind" fn(x: Datum, y: Datum, ssup: SortSupport) -> ::core::ffi::c_int,
     >,
     pub abbreviate: bool,
-    pub abbrev_converter:
-        ::core::option::Option<unsafe extern "C" fn(original: Datum, ssup: SortSupport) -> Datum>,
+    pub abbrev_converter: ::core::option::Option<
+        unsafe extern "C-unwind" fn(original: Datum, ssup: SortSupport) -> Datum,
+    >,
     pub abbrev_abort: ::core::option::Option<
-        unsafe extern "C" fn(memtupcount: ::core::ffi::c_int, ssup: SortSupport) -> bool,
+        unsafe extern "C-unwind" fn(memtupcount: ::core::ffi::c_int, ssup: SortSupport) -> bool,
     >,
     pub abbrev_full_comparator: ::core::option::Option<
-        unsafe extern "C" fn(x: Datum, y: Datum, ssup: SortSupport) -> ::core::ffi::c_int,
+        unsafe extern "C-unwind" fn(x: Datum, y: Datum, ssup: SortSupport) -> ::core::ffi::c_int,
     >,
 }
 impl Default for SortSupportData {
@@ -13439,7 +11361,7 @@ pub struct IndexBulkDeleteResult {
     pub pages_free: BlockNumber,
 }
 pub type IndexBulkDeleteCallback = ::core::option::Option<
-    unsafe extern "C" fn(itemptr: ItemPointer, state: *mut ::core::ffi::c_void) -> bool,
+    unsafe extern "C-unwind" fn(itemptr: ItemPointer, state: *mut ::core::ffi::c_void) -> bool,
 >;
 pub type IndexScanDesc = *mut IndexScanDescData;
 pub type SysScanDesc = *mut SysScanDescData;
@@ -13502,16 +11424,16 @@ impl Default for OpFamilyMember {
     }
 }
 pub type ambuild_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         heapRelation: Relation,
         indexRelation: Relation,
         indexInfo: *mut IndexInfo,
     ) -> *mut IndexBuildResult,
 >;
 pub type ambuildempty_function =
-    ::core::option::Option<unsafe extern "C" fn(indexRelation: Relation)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(indexRelation: Relation)>;
 pub type aminsert_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         indexRelation: Relation,
         values: *mut Datum,
         isnull: *mut bool,
@@ -13523,10 +11445,10 @@ pub type aminsert_function = ::core::option::Option<
     ) -> bool,
 >;
 pub type aminsertcleanup_function = ::core::option::Option<
-    unsafe extern "C" fn(indexRelation: Relation, indexInfo: *mut IndexInfo),
+    unsafe extern "C-unwind" fn(indexRelation: Relation, indexInfo: *mut IndexInfo),
 >;
 pub type ambulkdelete_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         info: *mut IndexVacuumInfo,
         stats: *mut IndexBulkDeleteResult,
         callback: IndexBulkDeleteCallback,
@@ -13534,16 +11456,16 @@ pub type ambulkdelete_function = ::core::option::Option<
     ) -> *mut IndexBulkDeleteResult,
 >;
 pub type amvacuumcleanup_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         info: *mut IndexVacuumInfo,
         stats: *mut IndexBulkDeleteResult,
     ) -> *mut IndexBulkDeleteResult,
 >;
 pub type amcanreturn_function = ::core::option::Option<
-    unsafe extern "C" fn(indexRelation: Relation, attno: ::core::ffi::c_int) -> bool,
+    unsafe extern "C-unwind" fn(indexRelation: Relation, attno: ::core::ffi::c_int) -> bool,
 >;
 pub type amcostestimate_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         path: *mut IndexPath,
         loop_count: f64,
@@ -13554,10 +11476,11 @@ pub type amcostestimate_function = ::core::option::Option<
         indexPages: *mut f64,
     ),
 >;
-pub type amoptions_function =
-    ::core::option::Option<unsafe extern "C" fn(reloptions: Datum, validate: bool) -> *mut bytea>;
+pub type amoptions_function = ::core::option::Option<
+    unsafe extern "C-unwind" fn(reloptions: Datum, validate: bool) -> *mut bytea,
+>;
 pub type amproperty_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         index_oid: Oid,
         attno: ::core::ffi::c_int,
         prop: IndexAMProperty::Type,
@@ -13566,12 +11489,13 @@ pub type amproperty_function = ::core::option::Option<
         isnull: *mut bool,
     ) -> bool,
 >;
-pub type ambuildphasename_function =
-    ::core::option::Option<unsafe extern "C" fn(phasenum: int64) -> *mut ::core::ffi::c_char>;
+pub type ambuildphasename_function = ::core::option::Option<
+    unsafe extern "C-unwind" fn(phasenum: int64) -> *mut ::core::ffi::c_char,
+>;
 pub type amvalidate_function =
-    ::core::option::Option<unsafe extern "C" fn(opclassoid: Oid) -> bool>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(opclassoid: Oid) -> bool>;
 pub type amadjustmembers_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         opfamilyoid: Oid,
         opclassoid: Oid,
         operators: *mut List,
@@ -13579,14 +11503,14 @@ pub type amadjustmembers_function = ::core::option::Option<
     ),
 >;
 pub type ambeginscan_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         indexRelation: Relation,
         nkeys: ::core::ffi::c_int,
         norderbys: ::core::ffi::c_int,
     ) -> IndexScanDesc,
 >;
 pub type amrescan_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         scan: IndexScanDesc,
         keys: ScanKey,
         nkeys: ::core::ffi::c_int,
@@ -13595,20 +11519,24 @@ pub type amrescan_function = ::core::option::Option<
     ),
 >;
 pub type amgettuple_function = ::core::option::Option<
-    unsafe extern "C" fn(scan: IndexScanDesc, direction: ScanDirection::Type) -> bool,
+    unsafe extern "C-unwind" fn(scan: IndexScanDesc, direction: ScanDirection::Type) -> bool,
 >;
-pub type amgetbitmap_function =
-    ::core::option::Option<unsafe extern "C" fn(scan: IndexScanDesc, tbm: *mut TIDBitmap) -> int64>;
-pub type amendscan_function = ::core::option::Option<unsafe extern "C" fn(scan: IndexScanDesc)>;
-pub type ammarkpos_function = ::core::option::Option<unsafe extern "C" fn(scan: IndexScanDesc)>;
-pub type amrestrpos_function = ::core::option::Option<unsafe extern "C" fn(scan: IndexScanDesc)>;
+pub type amgetbitmap_function = ::core::option::Option<
+    unsafe extern "C-unwind" fn(scan: IndexScanDesc, tbm: *mut TIDBitmap) -> int64,
+>;
+pub type amendscan_function =
+    ::core::option::Option<unsafe extern "C-unwind" fn(scan: IndexScanDesc)>;
+pub type ammarkpos_function =
+    ::core::option::Option<unsafe extern "C-unwind" fn(scan: IndexScanDesc)>;
+pub type amrestrpos_function =
+    ::core::option::Option<unsafe extern "C-unwind" fn(scan: IndexScanDesc)>;
 pub type amestimateparallelscan_function = ::core::option::Option<
-    unsafe extern "C" fn(nkeys: ::core::ffi::c_int, norderbys: ::core::ffi::c_int) -> Size,
+    unsafe extern "C-unwind" fn(nkeys: ::core::ffi::c_int, norderbys: ::core::ffi::c_int) -> Size,
 >;
 pub type aminitparallelscan_function =
-    ::core::option::Option<unsafe extern "C" fn(target: *mut ::core::ffi::c_void)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(target: *mut ::core::ffi::c_void)>;
 pub type amparallelrescan_function =
-    ::core::option::Option<unsafe extern "C" fn(scan: IndexScanDesc)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(scan: IndexScanDesc)>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct IndexAmRoutine {
@@ -13790,8 +11718,9 @@ impl Default for BrinDesc {
         }
     }
 }
-pub type brin_serialize_callback_type =
-    ::core::option::Option<unsafe extern "C" fn(bdesc: *mut BrinDesc, src: Datum, dst: *mut Datum)>;
+pub type brin_serialize_callback_type = ::core::option::Option<
+    unsafe extern "C-unwind" fn(bdesc: *mut BrinDesc, src: Datum, dst: *mut Datum),
+>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct BrinValues {
@@ -13941,7 +11870,7 @@ impl Default for SortTuple {
     }
 }
 pub type SortTupleComparator = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         a: *const SortTuple,
         b: *const SortTuple,
         state: *mut Tuplesortstate,
@@ -13953,28 +11882,28 @@ pub struct TuplesortPublic {
     pub comparetup: SortTupleComparator,
     pub comparetup_tiebreak: SortTupleComparator,
     pub removeabbrev: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             state: *mut Tuplesortstate,
             stups: *mut SortTuple,
             count: ::core::ffi::c_int,
         ),
     >,
     pub writetup: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             state: *mut Tuplesortstate,
             tape: *mut LogicalTape,
             stup: *mut SortTuple,
         ),
     >,
     pub readtup: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             state: *mut Tuplesortstate,
             stup: *mut SortTuple,
             tape: *mut LogicalTape,
             len: ::core::ffi::c_uint,
         ),
     >,
-    pub freestate: ::core::option::Option<unsafe extern "C" fn(state: *mut Tuplesortstate)>,
+    pub freestate: ::core::option::Option<unsafe extern "C-unwind" fn(state: *mut Tuplesortstate)>,
     pub maincontext: MemoryContext,
     pub sortcontext: MemoryContext,
     pub tuplecontext: MemoryContext,
@@ -14011,7 +11940,7 @@ pub struct CopyMultiInsertBuffer {
     _unused: [u8; 0],
 }
 pub type ExprStateEvalFunc = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         expression: *mut ExprState,
         econtext: *mut ExprContext,
         isNull: *mut bool,
@@ -14087,7 +12016,8 @@ impl Default for IndexInfo {
         }
     }
 }
-pub type ExprContextCallbackFunction = ::core::option::Option<unsafe extern "C" fn(arg: Datum)>;
+pub type ExprContextCallbackFunction =
+    ::core::option::Option<unsafe extern "C-unwind" fn(arg: Datum)>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct ExprContext_CB {
@@ -14251,6 +12181,7 @@ pub struct ResultRelInfo {
     pub ri_newTupleSlot: *mut TupleTableSlot,
     pub ri_oldTupleSlot: *mut TupleTableSlot,
     pub ri_projectNewInfoValid: bool,
+    pub ri_needLockTagTuple: bool,
     pub ri_TrigDesc: *mut TriggerDesc,
     pub ri_TrigFunctions: *mut FmgrInfo,
     pub ri_TrigWhenExprs: *mut *mut ExprState,
@@ -14623,8 +12554,9 @@ impl Default for JsonExprState {
         }
     }
 }
-pub type ExecProcNodeMtd =
-    ::core::option::Option<unsafe extern "C" fn(pstate: *mut PlanState) -> *mut TupleTableSlot>;
+pub type ExecProcNodeMtd = ::core::option::Option<
+    unsafe extern "C-unwind" fn(pstate: *mut PlanState) -> *mut TupleTableSlot,
+>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct PlanState {
@@ -14803,7 +12735,7 @@ pub struct AppendState {
     pub as_valid_subplans: *mut Bitmapset,
     pub as_valid_asyncplans: *mut Bitmapset,
     pub choose_next_subplan:
-        ::core::option::Option<unsafe extern "C" fn(arg1: *mut AppendState) -> bool>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(arg1: *mut AppendState) -> bool>,
 }
 impl Default for AppendState {
     fn default() -> Self {
@@ -16262,17 +14194,17 @@ pub type DestReceiver = _DestReceiver;
 #[derive(Debug, Copy, Clone)]
 pub struct _DestReceiver {
     pub receiveSlot: ::core::option::Option<
-        unsafe extern "C" fn(slot: *mut TupleTableSlot, self_: *mut DestReceiver) -> bool,
+        unsafe extern "C-unwind" fn(slot: *mut TupleTableSlot, self_: *mut DestReceiver) -> bool,
     >,
     pub rStartup: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             self_: *mut DestReceiver,
             operation: ::core::ffi::c_int,
             typeinfo: TupleDesc,
         ),
     >,
-    pub rShutdown: ::core::option::Option<unsafe extern "C" fn(self_: *mut DestReceiver)>,
-    pub rDestroy: ::core::option::Option<unsafe extern "C" fn(self_: *mut DestReceiver)>,
+    pub rShutdown: ::core::option::Option<unsafe extern "C-unwind" fn(self_: *mut DestReceiver)>,
+    pub rDestroy: ::core::option::Option<unsafe extern "C-unwind" fn(self_: *mut DestReceiver)>,
     pub mydest: CommandDest::Type,
 }
 impl Default for _DestReceiver {
@@ -20542,7 +18474,7 @@ pub struct MemoryContextCounters {
     pub freespace: Size,
 }
 pub type MemoryStatsPrintFunc = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         context: MemoryContext,
         passthru: *mut ::core::ffi::c_void,
         stats_string: *const ::core::ffi::c_char,
@@ -20553,30 +18485,33 @@ pub type MemoryStatsPrintFunc = ::core::option::Option<
 #[derive(Debug, Default, Copy, Clone)]
 pub struct MemoryContextMethods {
     pub alloc: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             context: MemoryContext,
             size: Size,
             flags: ::core::ffi::c_int,
         ) -> *mut ::core::ffi::c_void,
     >,
-    pub free_p: ::core::option::Option<unsafe extern "C" fn(pointer: *mut ::core::ffi::c_void)>,
+    pub free_p:
+        ::core::option::Option<unsafe extern "C-unwind" fn(pointer: *mut ::core::ffi::c_void)>,
     pub realloc: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             pointer: *mut ::core::ffi::c_void,
             size: Size,
             flags: ::core::ffi::c_int,
         ) -> *mut ::core::ffi::c_void,
     >,
-    pub reset: ::core::option::Option<unsafe extern "C" fn(context: MemoryContext)>,
-    pub delete_context: ::core::option::Option<unsafe extern "C" fn(context: MemoryContext)>,
+    pub reset: ::core::option::Option<unsafe extern "C-unwind" fn(context: MemoryContext)>,
+    pub delete_context: ::core::option::Option<unsafe extern "C-unwind" fn(context: MemoryContext)>,
     pub get_chunk_context: ::core::option::Option<
-        unsafe extern "C" fn(pointer: *mut ::core::ffi::c_void) -> MemoryContext,
+        unsafe extern "C-unwind" fn(pointer: *mut ::core::ffi::c_void) -> MemoryContext,
     >,
-    pub get_chunk_space:
-        ::core::option::Option<unsafe extern "C" fn(pointer: *mut ::core::ffi::c_void) -> Size>,
-    pub is_empty: ::core::option::Option<unsafe extern "C" fn(context: MemoryContext) -> bool>,
+    pub get_chunk_space: ::core::option::Option<
+        unsafe extern "C-unwind" fn(pointer: *mut ::core::ffi::c_void) -> Size,
+    >,
+    pub is_empty:
+        ::core::option::Option<unsafe extern "C-unwind" fn(context: MemoryContext) -> bool>,
     pub stats: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             context: MemoryContext,
             printfunc: MemoryStatsPrintFunc,
             passthru: *mut ::core::ffi::c_void,
@@ -20584,7 +18519,7 @@ pub struct MemoryContextMethods {
             print_to_stderr: bool,
         ),
     >,
-    pub check: ::core::option::Option<unsafe extern "C" fn(context: MemoryContext)>,
+    pub check: ::core::option::Option<unsafe extern "C-unwind" fn(context: MemoryContext)>,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -20612,10 +18547,10 @@ impl Default for MemoryContextData {
     }
 }
 pub type ExecutorStart_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(queryDesc: *mut QueryDesc, eflags: ::core::ffi::c_int),
+    unsafe extern "C-unwind" fn(queryDesc: *mut QueryDesc, eflags: ::core::ffi::c_int),
 >;
 pub type ExecutorRun_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         queryDesc: *mut QueryDesc,
         direction: ScanDirection::Type,
         count: uint64,
@@ -20623,20 +18558,21 @@ pub type ExecutorRun_hook_type = ::core::option::Option<
     ),
 >;
 pub type ExecutorFinish_hook_type =
-    ::core::option::Option<unsafe extern "C" fn(queryDesc: *mut QueryDesc)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(queryDesc: *mut QueryDesc)>;
 pub type ExecutorEnd_hook_type =
-    ::core::option::Option<unsafe extern "C" fn(queryDesc: *mut QueryDesc)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(queryDesc: *mut QueryDesc)>;
 pub type ExecutorCheckPerms_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rangeTable: *mut List,
         rtePermInfos: *mut List,
         ereport_on_violation: bool,
     ) -> bool,
 >;
-pub type ExecScanAccessMtd =
-    ::core::option::Option<unsafe extern "C" fn(node: *mut ScanState) -> *mut TupleTableSlot>;
+pub type ExecScanAccessMtd = ::core::option::Option<
+    unsafe extern "C-unwind" fn(node: *mut ScanState) -> *mut TupleTableSlot,
+>;
 pub type ExecScanRecheckMtd = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ScanState, slot: *mut TupleTableSlot) -> bool,
+    unsafe extern "C-unwind" fn(node: *mut ScanState, slot: *mut TupleTableSlot) -> bool,
 >;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -20698,585 +18634,12 @@ pub mod TypeFuncClass {
     pub const TYPEFUNC_OTHER: Type = 4;
 }
 pub type sig_atomic_t = __sig_atomic_t;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union sigval {
-    pub sival_int: ::core::ffi::c_int,
-    pub sival_ptr: *mut ::core::ffi::c_void,
-}
-impl Default for sigval {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type __sigval_t = sigval;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct siginfo_t {
-    pub si_signo: ::core::ffi::c_int,
-    pub si_errno: ::core::ffi::c_int,
-    pub si_code: ::core::ffi::c_int,
-    pub __pad0: ::core::ffi::c_int,
-    pub _sifields: siginfo_t__bindgen_ty_1,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union siginfo_t__bindgen_ty_1 {
-    pub _pad: [::core::ffi::c_int; 28usize],
-    pub _kill: siginfo_t__bindgen_ty_1__bindgen_ty_1,
-    pub _timer: siginfo_t__bindgen_ty_1__bindgen_ty_2,
-    pub _rt: siginfo_t__bindgen_ty_1__bindgen_ty_3,
-    pub _sigchld: siginfo_t__bindgen_ty_1__bindgen_ty_4,
-    pub _sigfault: siginfo_t__bindgen_ty_1__bindgen_ty_5,
-    pub _sigpoll: siginfo_t__bindgen_ty_1__bindgen_ty_6,
-    pub _sigsys: siginfo_t__bindgen_ty_1__bindgen_ty_7,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct siginfo_t__bindgen_ty_1__bindgen_ty_1 {
-    pub si_pid: __pid_t,
-    pub si_uid: __uid_t,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct siginfo_t__bindgen_ty_1__bindgen_ty_2 {
-    pub si_tid: ::core::ffi::c_int,
-    pub si_overrun: ::core::ffi::c_int,
-    pub si_sigval: __sigval_t,
-}
-impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_2 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct siginfo_t__bindgen_ty_1__bindgen_ty_3 {
-    pub si_pid: __pid_t,
-    pub si_uid: __uid_t,
-    pub si_sigval: __sigval_t,
-}
-impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_3 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct siginfo_t__bindgen_ty_1__bindgen_ty_4 {
-    pub si_pid: __pid_t,
-    pub si_uid: __uid_t,
-    pub si_status: ::core::ffi::c_int,
-    pub si_utime: __clock_t,
-    pub si_stime: __clock_t,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct siginfo_t__bindgen_ty_1__bindgen_ty_5 {
-    pub si_addr: *mut ::core::ffi::c_void,
-    pub si_addr_lsb: ::core::ffi::c_short,
-    pub _bounds: siginfo_t__bindgen_ty_1__bindgen_ty_5__bindgen_ty_1,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union siginfo_t__bindgen_ty_1__bindgen_ty_5__bindgen_ty_1 {
-    pub _addr_bnd: siginfo_t__bindgen_ty_1__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1,
-    pub _pkey: __uint32_t,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct siginfo_t__bindgen_ty_1__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1 {
-    pub _lower: *mut ::core::ffi::c_void,
-    pub _upper: *mut ::core::ffi::c_void,
-}
-impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_5__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_5 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct siginfo_t__bindgen_ty_1__bindgen_ty_6 {
-    pub si_band: ::core::ffi::c_long,
-    pub si_fd: ::core::ffi::c_int,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct siginfo_t__bindgen_ty_1__bindgen_ty_7 {
-    pub _call_addr: *mut ::core::ffi::c_void,
-    pub _syscall: ::core::ffi::c_int,
-    pub _arch: ::core::ffi::c_uint,
-}
-impl Default for siginfo_t__bindgen_ty_1__bindgen_ty_7 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for siginfo_t__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for siginfo_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub mod _bindgen_ty_7 {
-    pub type Type = ::core::ffi::c_int;
-    pub const SI_ASYNCNL: Type = -60;
-    pub const SI_DETHREAD: Type = -7;
-    pub const SI_TKILL: Type = -6;
-    pub const SI_SIGIO: Type = -5;
-    pub const SI_ASYNCIO: Type = -4;
-    pub const SI_MESGQ: Type = -3;
-    pub const SI_TIMER: Type = -2;
-    pub const SI_QUEUE: Type = -1;
-    pub const SI_USER: Type = 0;
-    pub const SI_KERNEL: Type = 128;
-}
-pub mod _bindgen_ty_8 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const ILL_ILLOPC: Type = 1;
-    pub const ILL_ILLOPN: Type = 2;
-    pub const ILL_ILLADR: Type = 3;
-    pub const ILL_ILLTRP: Type = 4;
-    pub const ILL_PRVOPC: Type = 5;
-    pub const ILL_PRVREG: Type = 6;
-    pub const ILL_COPROC: Type = 7;
-    pub const ILL_BADSTK: Type = 8;
-    pub const ILL_BADIADDR: Type = 9;
-}
-pub mod _bindgen_ty_9 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const FPE_INTDIV: Type = 1;
-    pub const FPE_INTOVF: Type = 2;
-    pub const FPE_FLTDIV: Type = 3;
-    pub const FPE_FLTOVF: Type = 4;
-    pub const FPE_FLTUND: Type = 5;
-    pub const FPE_FLTRES: Type = 6;
-    pub const FPE_FLTINV: Type = 7;
-    pub const FPE_FLTSUB: Type = 8;
-    pub const FPE_FLTUNK: Type = 14;
-    pub const FPE_CONDTRAP: Type = 15;
-}
-pub mod _bindgen_ty_10 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const SEGV_MAPERR: Type = 1;
-    pub const SEGV_ACCERR: Type = 2;
-    pub const SEGV_BNDERR: Type = 3;
-    pub const SEGV_PKUERR: Type = 4;
-    pub const SEGV_ACCADI: Type = 5;
-    pub const SEGV_ADIDERR: Type = 6;
-    pub const SEGV_ADIPERR: Type = 7;
-    pub const SEGV_MTEAERR: Type = 8;
-    pub const SEGV_MTESERR: Type = 9;
-}
-pub mod _bindgen_ty_11 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const BUS_ADRALN: Type = 1;
-    pub const BUS_ADRERR: Type = 2;
-    pub const BUS_OBJERR: Type = 3;
-    pub const BUS_MCEERR_AR: Type = 4;
-    pub const BUS_MCEERR_AO: Type = 5;
-}
-pub mod _bindgen_ty_12 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const CLD_EXITED: Type = 1;
-    pub const CLD_KILLED: Type = 2;
-    pub const CLD_DUMPED: Type = 3;
-    pub const CLD_TRAPPED: Type = 4;
-    pub const CLD_STOPPED: Type = 5;
-    pub const CLD_CONTINUED: Type = 6;
-}
-pub mod _bindgen_ty_13 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const POLL_IN: Type = 1;
-    pub const POLL_OUT: Type = 2;
-    pub const POLL_MSG: Type = 3;
-    pub const POLL_ERR: Type = 4;
-    pub const POLL_PRI: Type = 5;
-    pub const POLL_HUP: Type = 6;
-}
-pub type sigval_t = __sigval_t;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct sigevent {
-    pub sigev_value: __sigval_t,
-    pub sigev_signo: ::core::ffi::c_int,
-    pub sigev_notify: ::core::ffi::c_int,
-    pub _sigev_un: sigevent__bindgen_ty_1,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union sigevent__bindgen_ty_1 {
-    pub _pad: [::core::ffi::c_int; 12usize],
-    pub _tid: __pid_t,
-    pub _sigev_thread: sigevent__bindgen_ty_1__bindgen_ty_1,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct sigevent__bindgen_ty_1__bindgen_ty_1 {
-    pub _function: ::core::option::Option<unsafe extern "C" fn(arg1: __sigval_t)>,
-    pub _attribute: *mut pthread_attr_t,
-}
-impl Default for sigevent__bindgen_ty_1__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for sigevent__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for sigevent {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type sigevent_t = sigevent;
-pub mod _bindgen_ty_14 {
+pub mod _bindgen_ty_16 {
     pub type Type = ::core::ffi::c_uint;
     pub const SIGEV_SIGNAL: Type = 0;
     pub const SIGEV_NONE: Type = 1;
     pub const SIGEV_THREAD: Type = 2;
     pub const SIGEV_THREAD_ID: Type = 4;
-}
-pub type __sighandler_t = ::core::option::Option<unsafe extern "C" fn(arg1: ::core::ffi::c_int)>;
-pub type sig_t = __sighandler_t;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct sigaction {
-    pub __sigaction_handler: sigaction__bindgen_ty_1,
-    pub sa_mask: __sigset_t,
-    pub sa_flags: ::core::ffi::c_int,
-    pub sa_restorer: ::core::option::Option<unsafe extern "C" fn()>,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union sigaction__bindgen_ty_1 {
-    pub sa_handler: __sighandler_t,
-    pub sa_sigaction: ::core::option::Option<
-        unsafe extern "C" fn(
-            arg1: ::core::ffi::c_int,
-            arg2: *mut siginfo_t,
-            arg3: *mut ::core::ffi::c_void,
-        ),
-    >,
-}
-impl Default for sigaction__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for sigaction {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _fpx_sw_bytes {
-    pub magic1: __uint32_t,
-    pub extended_size: __uint32_t,
-    pub xstate_bv: __uint64_t,
-    pub xstate_size: __uint32_t,
-    pub __glibc_reserved1: [__uint32_t; 7usize],
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _fpreg {
-    pub significand: [::core::ffi::c_ushort; 4usize],
-    pub exponent: ::core::ffi::c_ushort,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _fpxreg {
-    pub significand: [::core::ffi::c_ushort; 4usize],
-    pub exponent: ::core::ffi::c_ushort,
-    pub __glibc_reserved1: [::core::ffi::c_ushort; 3usize],
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _xmmreg {
-    pub element: [__uint32_t; 4usize],
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _fpstate {
-    pub cwd: __uint16_t,
-    pub swd: __uint16_t,
-    pub ftw: __uint16_t,
-    pub fop: __uint16_t,
-    pub rip: __uint64_t,
-    pub rdp: __uint64_t,
-    pub mxcsr: __uint32_t,
-    pub mxcr_mask: __uint32_t,
-    pub _st: [_fpxreg; 8usize],
-    pub _xmm: [_xmmreg; 16usize],
-    pub __glibc_reserved1: [__uint32_t; 24usize],
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct sigcontext {
-    pub r8: __uint64_t,
-    pub r9: __uint64_t,
-    pub r10: __uint64_t,
-    pub r11: __uint64_t,
-    pub r12: __uint64_t,
-    pub r13: __uint64_t,
-    pub r14: __uint64_t,
-    pub r15: __uint64_t,
-    pub rdi: __uint64_t,
-    pub rsi: __uint64_t,
-    pub rbp: __uint64_t,
-    pub rbx: __uint64_t,
-    pub rdx: __uint64_t,
-    pub rax: __uint64_t,
-    pub rcx: __uint64_t,
-    pub rsp: __uint64_t,
-    pub rip: __uint64_t,
-    pub eflags: __uint64_t,
-    pub cs: ::core::ffi::c_ushort,
-    pub gs: ::core::ffi::c_ushort,
-    pub fs: ::core::ffi::c_ushort,
-    pub __pad0: ::core::ffi::c_ushort,
-    pub err: __uint64_t,
-    pub trapno: __uint64_t,
-    pub oldmask: __uint64_t,
-    pub cr2: __uint64_t,
-    pub __bindgen_anon_1: sigcontext__bindgen_ty_1,
-    pub __reserved1: [__uint64_t; 8usize],
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union sigcontext__bindgen_ty_1 {
-    pub fpstate: *mut _fpstate,
-    pub __fpstate_word: __uint64_t,
-}
-impl Default for sigcontext__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for sigcontext {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _xsave_hdr {
-    pub xstate_bv: __uint64_t,
-    pub __glibc_reserved1: [__uint64_t; 2usize],
-    pub __glibc_reserved2: [__uint64_t; 5usize],
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct _ymmh_state {
-    pub ymmh_space: [__uint32_t; 64usize],
-}
-impl Default for _ymmh_state {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct _xstate {
-    pub fpstate: _fpstate,
-    pub xstate_hdr: _xsave_hdr,
-    pub ymmh: _ymmh_state,
-}
-impl Default for _xstate {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct stack_t {
-    pub ss_sp: *mut ::core::ffi::c_void,
-    pub ss_flags: ::core::ffi::c_int,
-    pub ss_size: usize,
-}
-impl Default for stack_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type greg_t = ::core::ffi::c_longlong;
-pub type gregset_t = [greg_t; 23usize];
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _libc_fpxreg {
-    pub significand: [::core::ffi::c_ushort; 4usize],
-    pub exponent: ::core::ffi::c_ushort,
-    pub __glibc_reserved1: [::core::ffi::c_ushort; 3usize],
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _libc_xmmreg {
-    pub element: [__uint32_t; 4usize],
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct _libc_fpstate {
-    pub cwd: __uint16_t,
-    pub swd: __uint16_t,
-    pub ftw: __uint16_t,
-    pub fop: __uint16_t,
-    pub rip: __uint64_t,
-    pub rdp: __uint64_t,
-    pub mxcsr: __uint32_t,
-    pub mxcr_mask: __uint32_t,
-    pub _st: [_libc_fpxreg; 8usize],
-    pub _xmm: [_libc_xmmreg; 16usize],
-    pub __glibc_reserved1: [__uint32_t; 24usize],
-}
-pub type fpregset_t = *mut _libc_fpstate;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct mcontext_t {
-    pub gregs: gregset_t,
-    pub fpregs: fpregset_t,
-    pub __reserved1: [::core::ffi::c_ulonglong; 8usize],
-}
-impl Default for mcontext_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct ucontext_t {
-    pub uc_flags: ::core::ffi::c_ulong,
-    pub uc_link: *mut ucontext_t,
-    pub uc_stack: stack_t,
-    pub uc_mcontext: mcontext_t,
-    pub uc_sigmask: sigset_t,
-    pub __fpregs_mem: _libc_fpstate,
-    pub __ssp: [::core::ffi::c_ulonglong; 4usize],
-}
-impl Default for ucontext_t {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub mod _bindgen_ty_15 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const SS_ONSTACK: Type = 1;
-    pub const SS_DISABLE: Type = 2;
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct sigstack {
-    pub ss_sp: *mut ::core::ffi::c_void,
-    pub ss_onstack: ::core::ffi::c_int,
-}
-impl Default for sigstack {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
 }
 pub type pg_time_t = int64;
 #[repr(C)]
@@ -21345,7 +18708,7 @@ pub mod ProcessingMode {
     pub const InitProcessing: Type = 1;
     pub const NormalProcessing: Type = 2;
 }
-pub type shmem_request_hook_type = ::core::option::Option<unsafe extern "C" fn()>;
+pub type shmem_request_hook_type = ::core::option::Option<unsafe extern "C-unwind" fn()>;
 pub mod ProgressCommandType {
     pub type Type = ::core::ffi::c_uint;
     pub const PROGRESS_COMMAND_INVALID: Type = 0;
@@ -21356,25 +18719,7 @@ pub mod ProgressCommandType {
     pub const PROGRESS_COMMAND_BASEBACKUP: Type = 5;
     pub const PROGRESS_COMMAND_COPY: Type = 6;
 }
-pub mod __socket_type {
-    pub type Type = ::core::ffi::c_uint;
-    pub const SOCK_STREAM: Type = 1;
-    pub const SOCK_DGRAM: Type = 2;
-    pub const SOCK_RAW: Type = 3;
-    pub const SOCK_RDM: Type = 4;
-    pub const SOCK_SEQPACKET: Type = 5;
-    pub const SOCK_DCCP: Type = 6;
-    pub const SOCK_PACKET: Type = 10;
-    pub const SOCK_CLOEXEC: Type = 524288;
-    pub const SOCK_NONBLOCK: Type = 2048;
-}
 pub type sa_family_t = ::core::ffi::c_ushort;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct sockaddr {
-    pub sa_family: sa_family_t,
-    pub sa_data: [::core::ffi::c_char; 14usize],
-}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct sockaddr_storage {
@@ -21383,491 +18728,6 @@ pub struct sockaddr_storage {
     pub __ss_align: ::core::ffi::c_ulong,
 }
 impl Default for sockaddr_storage {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub mod _bindgen_ty_16 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const MSG_OOB: Type = 1;
-    pub const MSG_PEEK: Type = 2;
-    pub const MSG_DONTROUTE: Type = 4;
-    pub const MSG_CTRUNC: Type = 8;
-    pub const MSG_PROXY: Type = 16;
-    pub const MSG_TRUNC: Type = 32;
-    pub const MSG_DONTWAIT: Type = 64;
-    pub const MSG_EOR: Type = 128;
-    pub const MSG_WAITALL: Type = 256;
-    pub const MSG_FIN: Type = 512;
-    pub const MSG_SYN: Type = 1024;
-    pub const MSG_CONFIRM: Type = 2048;
-    pub const MSG_RST: Type = 4096;
-    pub const MSG_ERRQUEUE: Type = 8192;
-    pub const MSG_NOSIGNAL: Type = 16384;
-    pub const MSG_MORE: Type = 32768;
-    pub const MSG_WAITFORONE: Type = 65536;
-    pub const MSG_BATCH: Type = 262144;
-    pub const MSG_ZEROCOPY: Type = 67108864;
-    pub const MSG_FASTOPEN: Type = 536870912;
-    pub const MSG_CMSG_CLOEXEC: Type = 1073741824;
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct msghdr {
-    pub msg_name: *mut ::core::ffi::c_void,
-    pub msg_namelen: socklen_t,
-    pub msg_iov: *mut iovec,
-    pub msg_iovlen: usize,
-    pub msg_control: *mut ::core::ffi::c_void,
-    pub msg_controllen: usize,
-    pub msg_flags: ::core::ffi::c_int,
-}
-impl Default for msghdr {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default)]
-pub struct cmsghdr {
-    pub cmsg_len: usize,
-    pub cmsg_level: ::core::ffi::c_int,
-    pub cmsg_type: ::core::ffi::c_int,
-    pub __cmsg_data: __IncompleteArrayField<::core::ffi::c_uchar>,
-}
-pub mod _bindgen_ty_17 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const SCM_RIGHTS: Type = 1;
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct __kernel_fd_set {
-    pub fds_bits: [::core::ffi::c_ulong; 16usize],
-}
-pub type __kernel_sighandler_t =
-    ::core::option::Option<unsafe extern "C" fn(arg1: ::core::ffi::c_int)>;
-pub type __kernel_key_t = ::core::ffi::c_int;
-pub type __kernel_mqd_t = ::core::ffi::c_int;
-pub type __kernel_old_uid_t = ::core::ffi::c_ushort;
-pub type __kernel_old_gid_t = ::core::ffi::c_ushort;
-pub type __kernel_old_dev_t = ::core::ffi::c_ulong;
-pub type __kernel_long_t = ::core::ffi::c_long;
-pub type __kernel_ulong_t = ::core::ffi::c_ulong;
-pub type __kernel_ino_t = __kernel_ulong_t;
-pub type __kernel_mode_t = ::core::ffi::c_uint;
-pub type __kernel_pid_t = ::core::ffi::c_int;
-pub type __kernel_ipc_pid_t = ::core::ffi::c_int;
-pub type __kernel_uid_t = ::core::ffi::c_uint;
-pub type __kernel_gid_t = ::core::ffi::c_uint;
-pub type __kernel_suseconds_t = __kernel_long_t;
-pub type __kernel_daddr_t = ::core::ffi::c_int;
-pub type __kernel_uid32_t = ::core::ffi::c_uint;
-pub type __kernel_gid32_t = ::core::ffi::c_uint;
-pub type __kernel_size_t = __kernel_ulong_t;
-pub type __kernel_ssize_t = __kernel_long_t;
-pub type __kernel_ptrdiff_t = __kernel_long_t;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct __kernel_fsid_t {
-    pub val: [::core::ffi::c_int; 2usize],
-}
-pub type __kernel_off_t = __kernel_long_t;
-pub type __kernel_loff_t = ::core::ffi::c_longlong;
-pub type __kernel_old_time_t = __kernel_long_t;
-pub type __kernel_time_t = __kernel_long_t;
-pub type __kernel_time64_t = ::core::ffi::c_longlong;
-pub type __kernel_clock_t = __kernel_long_t;
-pub type __kernel_timer_t = ::core::ffi::c_int;
-pub type __kernel_clockid_t = ::core::ffi::c_int;
-pub type __kernel_caddr_t = *mut ::core::ffi::c_char;
-pub type __kernel_uid16_t = ::core::ffi::c_ushort;
-pub type __kernel_gid16_t = ::core::ffi::c_ushort;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct linger {
-    pub l_onoff: ::core::ffi::c_int,
-    pub l_linger: ::core::ffi::c_int,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct osockaddr {
-    pub sa_family: ::core::ffi::c_ushort,
-    pub sa_data: [::core::ffi::c_uchar; 14usize],
-}
-pub mod _bindgen_ty_18 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const SHUT_RD: Type = 0;
-    pub const SHUT_WR: Type = 1;
-    pub const SHUT_RDWR: Type = 2;
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct sockaddr_un {
-    pub sun_family: sa_family_t,
-    pub sun_path: [::core::ffi::c_char; 108usize],
-}
-impl Default for sockaddr_un {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-pub type in_addr_t = u32;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct in_addr {
-    pub s_addr: in_addr_t,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct ip_opts {
-    pub ip_dst: in_addr,
-    pub ip_opts: [::core::ffi::c_char; 40usize],
-}
-impl Default for ip_opts {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ip_mreqn {
-    pub imr_multiaddr: in_addr,
-    pub imr_address: in_addr,
-    pub imr_ifindex: ::core::ffi::c_int,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct in_pktinfo {
-    pub ipi_ifindex: ::core::ffi::c_int,
-    pub ipi_spec_dst: in_addr,
-    pub ipi_addr: in_addr,
-}
-pub mod _bindgen_ty_19 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const IPPROTO_IP: Type = 0;
-    pub const IPPROTO_ICMP: Type = 1;
-    pub const IPPROTO_IGMP: Type = 2;
-    pub const IPPROTO_IPIP: Type = 4;
-    pub const IPPROTO_TCP: Type = 6;
-    pub const IPPROTO_EGP: Type = 8;
-    pub const IPPROTO_PUP: Type = 12;
-    pub const IPPROTO_UDP: Type = 17;
-    pub const IPPROTO_IDP: Type = 22;
-    pub const IPPROTO_TP: Type = 29;
-    pub const IPPROTO_DCCP: Type = 33;
-    pub const IPPROTO_IPV6: Type = 41;
-    pub const IPPROTO_RSVP: Type = 46;
-    pub const IPPROTO_GRE: Type = 47;
-    pub const IPPROTO_ESP: Type = 50;
-    pub const IPPROTO_AH: Type = 51;
-    pub const IPPROTO_MTP: Type = 92;
-    pub const IPPROTO_BEETPH: Type = 94;
-    pub const IPPROTO_ENCAP: Type = 98;
-    pub const IPPROTO_PIM: Type = 103;
-    pub const IPPROTO_COMP: Type = 108;
-    pub const IPPROTO_SCTP: Type = 132;
-    pub const IPPROTO_UDPLITE: Type = 136;
-    pub const IPPROTO_MPLS: Type = 137;
-    pub const IPPROTO_ETHERNET: Type = 143;
-    pub const IPPROTO_RAW: Type = 255;
-    pub const IPPROTO_MPTCP: Type = 262;
-    pub const IPPROTO_MAX: Type = 263;
-}
-pub mod _bindgen_ty_20 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const IPPROTO_HOPOPTS: Type = 0;
-    pub const IPPROTO_ROUTING: Type = 43;
-    pub const IPPROTO_FRAGMENT: Type = 44;
-    pub const IPPROTO_ICMPV6: Type = 58;
-    pub const IPPROTO_NONE: Type = 59;
-    pub const IPPROTO_DSTOPTS: Type = 60;
-    pub const IPPROTO_MH: Type = 135;
-}
-pub type in_port_t = u16;
-pub mod _bindgen_ty_21 {
-    pub type Type = ::core::ffi::c_uint;
-    pub const IPPORT_ECHO: Type = 7;
-    pub const IPPORT_DISCARD: Type = 9;
-    pub const IPPORT_SYSTAT: Type = 11;
-    pub const IPPORT_DAYTIME: Type = 13;
-    pub const IPPORT_NETSTAT: Type = 15;
-    pub const IPPORT_FTP: Type = 21;
-    pub const IPPORT_TELNET: Type = 23;
-    pub const IPPORT_SMTP: Type = 25;
-    pub const IPPORT_TIMESERVER: Type = 37;
-    pub const IPPORT_NAMESERVER: Type = 42;
-    pub const IPPORT_WHOIS: Type = 43;
-    pub const IPPORT_MTP: Type = 57;
-    pub const IPPORT_TFTP: Type = 69;
-    pub const IPPORT_RJE: Type = 77;
-    pub const IPPORT_FINGER: Type = 79;
-    pub const IPPORT_TTYLINK: Type = 87;
-    pub const IPPORT_SUPDUP: Type = 95;
-    pub const IPPORT_EXECSERVER: Type = 512;
-    pub const IPPORT_LOGINSERVER: Type = 513;
-    pub const IPPORT_CMDSERVER: Type = 514;
-    pub const IPPORT_EFSSERVER: Type = 520;
-    pub const IPPORT_BIFFUDP: Type = 512;
-    pub const IPPORT_WHOSERVER: Type = 513;
-    pub const IPPORT_ROUTESERVER: Type = 520;
-    pub const IPPORT_RESERVED: Type = 1024;
-    pub const IPPORT_USERRESERVED: Type = 5000;
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct in6_addr {
-    pub __in6_u: in6_addr__bindgen_ty_1,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union in6_addr__bindgen_ty_1 {
-    pub __u6_addr8: [u8; 16usize],
-    pub __u6_addr16: [u16; 8usize],
-    pub __u6_addr32: [u32; 4usize],
-}
-impl Default for in6_addr__bindgen_ty_1 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl Default for in6_addr {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct sockaddr_in {
-    pub sin_family: sa_family_t,
-    pub sin_port: in_port_t,
-    pub sin_addr: in_addr,
-    pub sin_zero: [::core::ffi::c_uchar; 8usize],
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct sockaddr_in6 {
-    pub sin6_family: sa_family_t,
-    pub sin6_port: in_port_t,
-    pub sin6_flowinfo: u32,
-    pub sin6_addr: in6_addr,
-    pub sin6_scope_id: u32,
-}
-impl Default for sockaddr_in6 {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ip_mreq {
-    pub imr_multiaddr: in_addr,
-    pub imr_interface: in_addr,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ip_mreq_source {
-    pub imr_multiaddr: in_addr,
-    pub imr_interface: in_addr,
-    pub imr_sourceaddr: in_addr,
-}
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct ipv6_mreq {
-    pub ipv6mr_multiaddr: in6_addr,
-    pub ipv6mr_interface: ::core::ffi::c_uint,
-}
-impl Default for ipv6_mreq {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct group_req {
-    pub gr_interface: u32,
-    pub gr_group: sockaddr_storage,
-}
-impl Default for group_req {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct group_source_req {
-    pub gsr_interface: u32,
-    pub gsr_group: sockaddr_storage,
-    pub gsr_source: sockaddr_storage,
-}
-impl Default for group_source_req {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ip_msfilter {
-    pub imsf_multiaddr: in_addr,
-    pub imsf_interface: in_addr,
-    pub imsf_fmode: u32,
-    pub imsf_numsrc: u32,
-    pub imsf_slist: [in_addr; 1usize],
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct group_filter {
-    pub gf_interface: u32,
-    pub gf_group: sockaddr_storage,
-    pub gf_fmode: u32,
-    pub gf_numsrc: u32,
-    pub gf_slist: [sockaddr_storage; 1usize],
-}
-impl Default for group_filter {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct rpcent {
-    pub r_name: *mut ::core::ffi::c_char,
-    pub r_aliases: *mut *mut ::core::ffi::c_char,
-    pub r_number: ::core::ffi::c_int,
-}
-impl Default for rpcent {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct netent {
-    pub n_name: *mut ::core::ffi::c_char,
-    pub n_aliases: *mut *mut ::core::ffi::c_char,
-    pub n_addrtype: ::core::ffi::c_int,
-    pub n_net: u32,
-}
-impl Default for netent {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct hostent {
-    pub h_name: *mut ::core::ffi::c_char,
-    pub h_aliases: *mut *mut ::core::ffi::c_char,
-    pub h_addrtype: ::core::ffi::c_int,
-    pub h_length: ::core::ffi::c_int,
-    pub h_addr_list: *mut *mut ::core::ffi::c_char,
-}
-impl Default for hostent {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct servent {
-    pub s_name: *mut ::core::ffi::c_char,
-    pub s_aliases: *mut *mut ::core::ffi::c_char,
-    pub s_port: ::core::ffi::c_int,
-    pub s_proto: *mut ::core::ffi::c_char,
-}
-impl Default for servent {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct protoent {
-    pub p_name: *mut ::core::ffi::c_char,
-    pub p_aliases: *mut *mut ::core::ffi::c_char,
-    pub p_proto: ::core::ffi::c_int,
-}
-impl Default for protoent {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct addrinfo {
-    pub ai_flags: ::core::ffi::c_int,
-    pub ai_family: ::core::ffi::c_int,
-    pub ai_socktype: ::core::ffi::c_int,
-    pub ai_protocol: ::core::ffi::c_int,
-    pub ai_addrlen: socklen_t,
-    pub ai_addr: *mut sockaddr,
-    pub ai_canonname: *mut ::core::ffi::c_char,
-    pub ai_next: *mut addrinfo,
-}
-impl Default for addrinfo {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -22676,7 +19536,7 @@ impl Default for RelFileLocatorBackend {
     }
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct XLogRecord {
     pub xl_tot_len: uint32,
     pub xl_xid: TransactionId,
@@ -22684,6 +19544,15 @@ pub struct XLogRecord {
     pub xl_info: uint8,
     pub xl_rmid: RmgrId,
     pub xl_crc: pg_crc32c,
+}
+impl Default for XLogRecord {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -22738,7 +19607,7 @@ impl Default for WALSegmentContext {
     }
 }
 pub type XLogPageReadCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         xlogreader: *mut XLogReaderState,
         targetPagePtr: XLogRecPtr,
         reqLen: ::core::ffi::c_int,
@@ -22747,14 +19616,14 @@ pub type XLogPageReadCB = ::core::option::Option<
     ) -> ::core::ffi::c_int,
 >;
 pub type WALSegmentOpenCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         xlogreader: *mut XLogReaderState,
         nextSegNo: XLogSegNo,
         tli_p: *mut TimeLineID,
     ),
 >;
 pub type WALSegmentCloseCB =
-    ::core::option::Option<unsafe extern "C" fn(xlogreader: *mut XLogReaderState)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(xlogreader: *mut XLogReaderState)>;
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct XLogReaderRoutine {
@@ -23686,7 +20555,7 @@ pub mod XactEvent {
     pub const XACT_EVENT_PRE_PREPARE: Type = 7;
 }
 pub type XactCallback = ::core::option::Option<
-    unsafe extern "C" fn(event: XactEvent::Type, arg: *mut ::core::ffi::c_void),
+    unsafe extern "C-unwind" fn(event: XactEvent::Type, arg: *mut ::core::ffi::c_void),
 >;
 pub mod SubXactEvent {
     pub type Type = ::core::ffi::c_uint;
@@ -23696,7 +20565,7 @@ pub mod SubXactEvent {
     pub const SUBXACT_EVENT_PRE_COMMIT_SUB: Type = 3;
 }
 pub type SubXactCallback = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         event: SubXactEvent::Type,
         mySubid: SubTransactionId,
         parentSubid: SubTransactionId,
@@ -23711,11 +20580,20 @@ pub struct SavedTransactionCharacteristics {
     pub save_XactDeferrable: bool,
 }
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct xl_xact_assignment {
     pub xtop: TransactionId,
     pub nsubxacts: ::core::ffi::c_int,
     pub xsub: __IncompleteArrayField<TransactionId>,
+}
+impl Default for xl_xact_assignment {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -23738,10 +20616,19 @@ impl Default for xl_xact_dbinfo {
     }
 }
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct xl_xact_subxacts {
     pub nsubxacts: ::core::ffi::c_int,
     pub subxacts: __IncompleteArrayField<TransactionId>,
+}
+impl Default for xl_xact_subxacts {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug)]
@@ -23804,9 +20691,18 @@ impl Default for xl_xact_invals {
     }
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct xl_xact_twophase {
     pub xid: TransactionId,
+}
+impl Default for xl_xact_twophase {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -23933,9 +20829,9 @@ pub struct ResourceOwnerDesc {
     pub name: *const ::core::ffi::c_char,
     pub release_phase: ResourceReleasePhase::Type,
     pub release_priority: ResourceReleasePriority,
-    pub ReleaseResource: ::core::option::Option<unsafe extern "C" fn(res: Datum)>,
+    pub ReleaseResource: ::core::option::Option<unsafe extern "C-unwind" fn(res: Datum)>,
     pub DebugPrint:
-        ::core::option::Option<unsafe extern "C" fn(res: Datum) -> *mut ::core::ffi::c_char>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(res: Datum) -> *mut ::core::ffi::c_char>,
 }
 impl Default for ResourceOwnerDesc {
     fn default() -> Self {
@@ -23947,7 +20843,7 @@ impl Default for ResourceOwnerDesc {
     }
 }
 pub type ResourceReleaseCallback = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         phase: ResourceReleasePhase::Type,
         isCommit: bool,
         isTopLevel: bool,
@@ -24026,16 +20922,11 @@ impl Default for ReadBuffersOperation {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct WritebackContext {
-    _unused: [u8; 0],
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct ReadStream {
     _unused: [u8; 0],
 }
 pub type ReadStreamBlockNumberCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         stream: *mut ReadStream,
         callback_private_data: *mut ::core::ffi::c_void,
         per_buffer_data: *mut ::core::ffi::c_void,
@@ -24077,12 +20968,21 @@ pub mod TU_UpdateIndexes {
     pub const TU_Summarizing: Type = 2;
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct TM_FailureData {
     pub ctid: ItemPointerData,
     pub xmax: TransactionId,
     pub cmax: CommandId,
     pub traversed: bool,
+}
+impl Default for TM_FailureData {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -24119,7 +21019,7 @@ impl Default for TM_IndexDeleteOp {
     }
 }
 pub type IndexBuildCallback = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         index: Relation,
         tid: ItemPointer,
         values: *mut Datum,
@@ -24132,10 +21032,11 @@ pub type IndexBuildCallback = ::core::option::Option<
 #[derive(Debug, Copy, Clone)]
 pub struct TableAmRoutine {
     pub type_: NodeTag,
-    pub slot_callbacks:
-        ::core::option::Option<unsafe extern "C" fn(rel: Relation) -> *const TupleTableSlotOps>,
+    pub slot_callbacks: ::core::option::Option<
+        unsafe extern "C-unwind" fn(rel: Relation) -> *const TupleTableSlotOps,
+    >,
     pub scan_begin: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             snapshot: Snapshot,
             nkeys: ::core::ffi::c_int,
@@ -24144,9 +21045,9 @@ pub struct TableAmRoutine {
             flags: uint32,
         ) -> TableScanDesc,
     >,
-    pub scan_end: ::core::option::Option<unsafe extern "C" fn(scan: TableScanDesc)>,
+    pub scan_end: ::core::option::Option<unsafe extern "C-unwind" fn(scan: TableScanDesc)>,
     pub scan_rescan: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             scan: TableScanDesc,
             key: *mut ScanKeyData,
             set_params: bool,
@@ -24156,36 +21057,39 @@ pub struct TableAmRoutine {
         ),
     >,
     pub scan_getnextslot: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             scan: TableScanDesc,
             direction: ScanDirection::Type,
             slot: *mut TupleTableSlot,
         ) -> bool,
     >,
     pub scan_set_tidrange: ::core::option::Option<
-        unsafe extern "C" fn(scan: TableScanDesc, mintid: ItemPointer, maxtid: ItemPointer),
+        unsafe extern "C-unwind" fn(scan: TableScanDesc, mintid: ItemPointer, maxtid: ItemPointer),
     >,
     pub scan_getnextslot_tidrange: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             scan: TableScanDesc,
             direction: ScanDirection::Type,
             slot: *mut TupleTableSlot,
         ) -> bool,
     >,
-    pub parallelscan_estimate: ::core::option::Option<unsafe extern "C" fn(rel: Relation) -> Size>,
+    pub parallelscan_estimate:
+        ::core::option::Option<unsafe extern "C-unwind" fn(rel: Relation) -> Size>,
     pub parallelscan_initialize: ::core::option::Option<
-        unsafe extern "C" fn(rel: Relation, pscan: ParallelTableScanDesc) -> Size,
+        unsafe extern "C-unwind" fn(rel: Relation, pscan: ParallelTableScanDesc) -> Size,
     >,
-    pub parallelscan_reinitialize:
-        ::core::option::Option<unsafe extern "C" fn(rel: Relation, pscan: ParallelTableScanDesc)>,
-    pub index_fetch_begin:
-        ::core::option::Option<unsafe extern "C" fn(rel: Relation) -> *mut IndexFetchTableData>,
+    pub parallelscan_reinitialize: ::core::option::Option<
+        unsafe extern "C-unwind" fn(rel: Relation, pscan: ParallelTableScanDesc),
+    >,
+    pub index_fetch_begin: ::core::option::Option<
+        unsafe extern "C-unwind" fn(rel: Relation) -> *mut IndexFetchTableData,
+    >,
     pub index_fetch_reset:
-        ::core::option::Option<unsafe extern "C" fn(data: *mut IndexFetchTableData)>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(data: *mut IndexFetchTableData)>,
     pub index_fetch_end:
-        ::core::option::Option<unsafe extern "C" fn(data: *mut IndexFetchTableData)>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(data: *mut IndexFetchTableData)>,
     pub index_fetch_tuple: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             scan: *mut IndexFetchTableData,
             tid: ItemPointer,
             snapshot: Snapshot,
@@ -24195,25 +21099,33 @@ pub struct TableAmRoutine {
         ) -> bool,
     >,
     pub tuple_fetch_row_version: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             tid: ItemPointer,
             snapshot: Snapshot,
             slot: *mut TupleTableSlot,
         ) -> bool,
     >,
-    pub tuple_tid_valid:
-        ::core::option::Option<unsafe extern "C" fn(scan: TableScanDesc, tid: ItemPointer) -> bool>,
+    pub tuple_tid_valid: ::core::option::Option<
+        unsafe extern "C-unwind" fn(scan: TableScanDesc, tid: ItemPointer) -> bool,
+    >,
     pub tuple_get_latest_tid:
-        ::core::option::Option<unsafe extern "C" fn(scan: TableScanDesc, tid: ItemPointer)>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(scan: TableScanDesc, tid: ItemPointer)>,
     pub tuple_satisfies_snapshot: ::core::option::Option<
-        unsafe extern "C" fn(rel: Relation, slot: *mut TupleTableSlot, snapshot: Snapshot) -> bool,
+        unsafe extern "C-unwind" fn(
+            rel: Relation,
+            slot: *mut TupleTableSlot,
+            snapshot: Snapshot,
+        ) -> bool,
     >,
     pub index_delete_tuples: ::core::option::Option<
-        unsafe extern "C" fn(rel: Relation, delstate: *mut TM_IndexDeleteOp) -> TransactionId,
+        unsafe extern "C-unwind" fn(
+            rel: Relation,
+            delstate: *mut TM_IndexDeleteOp,
+        ) -> TransactionId,
     >,
     pub tuple_insert: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             slot: *mut TupleTableSlot,
             cid: CommandId,
@@ -24222,7 +21134,7 @@ pub struct TableAmRoutine {
         ),
     >,
     pub tuple_insert_speculative: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             slot: *mut TupleTableSlot,
             cid: CommandId,
@@ -24232,7 +21144,7 @@ pub struct TableAmRoutine {
         ),
     >,
     pub tuple_complete_speculative: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             slot: *mut TupleTableSlot,
             specToken: uint32,
@@ -24240,7 +21152,7 @@ pub struct TableAmRoutine {
         ),
     >,
     pub multi_insert: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             slots: *mut *mut TupleTableSlot,
             nslots: ::core::ffi::c_int,
@@ -24250,7 +21162,7 @@ pub struct TableAmRoutine {
         ),
     >,
     pub tuple_delete: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             tid: ItemPointer,
             cid: CommandId,
@@ -24262,7 +21174,7 @@ pub struct TableAmRoutine {
         ) -> TM_Result::Type,
     >,
     pub tuple_update: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             otid: ItemPointer,
             slot: *mut TupleTableSlot,
@@ -24276,7 +21188,7 @@ pub struct TableAmRoutine {
         ) -> TM_Result::Type,
     >,
     pub tuple_lock: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             tid: ItemPointer,
             snapshot: Snapshot,
@@ -24288,10 +21200,11 @@ pub struct TableAmRoutine {
             tmfd: *mut TM_FailureData,
         ) -> TM_Result::Type,
     >,
-    pub finish_bulk_insert:
-        ::core::option::Option<unsafe extern "C" fn(rel: Relation, options: ::core::ffi::c_int)>,
+    pub finish_bulk_insert: ::core::option::Option<
+        unsafe extern "C-unwind" fn(rel: Relation, options: ::core::ffi::c_int),
+    >,
     pub relation_set_new_filelocator: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             newrlocator: *const RelFileLocator,
             persistence: ::core::ffi::c_char,
@@ -24300,12 +21213,12 @@ pub struct TableAmRoutine {
         ),
     >,
     pub relation_nontransactional_truncate:
-        ::core::option::Option<unsafe extern "C" fn(rel: Relation)>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(rel: Relation)>,
     pub relation_copy_data: ::core::option::Option<
-        unsafe extern "C" fn(rel: Relation, newrlocator: *const RelFileLocator),
+        unsafe extern "C-unwind" fn(rel: Relation, newrlocator: *const RelFileLocator),
     >,
     pub relation_copy_for_cluster: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             OldTable: Relation,
             NewTable: Relation,
             OldIndex: Relation,
@@ -24319,17 +21232,17 @@ pub struct TableAmRoutine {
         ),
     >,
     pub relation_vacuum: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             params: *mut VacuumParams,
             bstrategy: BufferAccessStrategy,
         ),
     >,
     pub scan_analyze_next_block: ::core::option::Option<
-        unsafe extern "C" fn(scan: TableScanDesc, stream: *mut ReadStream) -> bool,
+        unsafe extern "C-unwind" fn(scan: TableScanDesc, stream: *mut ReadStream) -> bool,
     >,
     pub scan_analyze_next_tuple: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             scan: TableScanDesc,
             OldestXmin: TransactionId,
             liverows: *mut f64,
@@ -24338,7 +21251,7 @@ pub struct TableAmRoutine {
         ) -> bool,
     >,
     pub index_build_range_scan: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             table_rel: Relation,
             index_rel: Relation,
             index_info: *mut IndexInfo,
@@ -24353,7 +21266,7 @@ pub struct TableAmRoutine {
         ) -> f64,
     >,
     pub index_validate_scan: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             table_rel: Relation,
             index_rel: Relation,
             index_info: *mut IndexInfo,
@@ -24362,13 +21275,14 @@ pub struct TableAmRoutine {
         ),
     >,
     pub relation_size: ::core::option::Option<
-        unsafe extern "C" fn(rel: Relation, forkNumber: ForkNumber::Type) -> uint64,
+        unsafe extern "C-unwind" fn(rel: Relation, forkNumber: ForkNumber::Type) -> uint64,
     >,
     pub relation_needs_toast_table:
-        ::core::option::Option<unsafe extern "C" fn(rel: Relation) -> bool>,
-    pub relation_toast_am: ::core::option::Option<unsafe extern "C" fn(rel: Relation) -> Oid>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(rel: Relation) -> bool>,
+    pub relation_toast_am:
+        ::core::option::Option<unsafe extern "C-unwind" fn(rel: Relation) -> Oid>,
     pub relation_fetch_toast_slice: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             toastrel: Relation,
             valueid: Oid,
             attrsize: int32,
@@ -24378,7 +21292,7 @@ pub struct TableAmRoutine {
         ),
     >,
     pub relation_estimate_size: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             rel: Relation,
             attr_widths: *mut int32,
             pages: *mut BlockNumber,
@@ -24387,20 +21301,20 @@ pub struct TableAmRoutine {
         ),
     >,
     pub scan_bitmap_next_block: ::core::option::Option<
-        unsafe extern "C" fn(scan: TableScanDesc, tbmres: *mut TBMIterateResult) -> bool,
+        unsafe extern "C-unwind" fn(scan: TableScanDesc, tbmres: *mut TBMIterateResult) -> bool,
     >,
     pub scan_bitmap_next_tuple: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             scan: TableScanDesc,
             tbmres: *mut TBMIterateResult,
             slot: *mut TupleTableSlot,
         ) -> bool,
     >,
     pub scan_sample_next_block: ::core::option::Option<
-        unsafe extern "C" fn(scan: TableScanDesc, scanstate: *mut SampleScanState) -> bool,
+        unsafe extern "C-unwind" fn(scan: TableScanDesc, scanstate: *mut SampleScanState) -> bool,
     >,
     pub scan_sample_next_tuple: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             scan: TableScanDesc,
             scanstate: *mut SampleScanState,
             slot: *mut TupleTableSlot,
@@ -24502,7 +21416,7 @@ pub mod HTSV_Result {
     pub const HEAPTUPLE_DELETE_IN_PROGRESS: Type = 4;
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct HeapTupleFreeze {
     pub xmax: TransactionId,
     pub t_infomask2: uint16,
@@ -24511,14 +21425,31 @@ pub struct HeapTupleFreeze {
     pub checkflags: uint8,
     pub offset: OffsetNumber,
 }
+impl Default for HeapTupleFreeze {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
 pub struct HeapPageFreeze {
     pub freeze_required: bool,
     pub FreezePageRelfrozenXid: TransactionId,
     pub FreezePageRelminMxid: MultiXactId,
     pub NoFreezePageRelfrozenXid: TransactionId,
     pub NoFreezePageRelminMxid: MultiXactId,
+}
+impl Default for HeapPageFreeze {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -24613,7 +21544,6 @@ impl Default for MultiXactMember {
     }
 }
 #[repr(C)]
-#[derive(Debug)]
 pub struct xl_multixact_create {
     pub mid: MultiXactId,
     pub moff: MultiXactOffset,
@@ -24630,7 +21560,6 @@ impl Default for xl_multixact_create {
     }
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct xl_multixact_truncate {
     pub oldestMultiDB: Oid,
     pub startTruncOff: MultiXactId,
@@ -25124,12 +22053,15 @@ impl Default for relopt_enum {
     }
 }
 pub type validate_string_relopt =
-    ::core::option::Option<unsafe extern "C" fn(value: *const ::core::ffi::c_char)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(value: *const ::core::ffi::c_char)>;
 pub type fill_string_relopt = ::core::option::Option<
-    unsafe extern "C" fn(value: *const ::core::ffi::c_char, ptr: *mut ::core::ffi::c_void) -> Size,
+    unsafe extern "C-unwind" fn(
+        value: *const ::core::ffi::c_char,
+        ptr: *mut ::core::ffi::c_void,
+    ) -> Size,
 >;
 pub type relopts_validator = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         parsed_options: *mut ::core::ffi::c_void,
         vals: *mut relopt_value,
         nvals: ::core::ffi::c_int,
@@ -25292,18 +22224,20 @@ pub struct XLogRecordBuffer {
 #[derive(Debug, Copy, Clone)]
 pub struct RmgrData {
     pub rm_name: *const ::core::ffi::c_char,
-    pub rm_redo: ::core::option::Option<unsafe extern "C" fn(record: *mut XLogReaderState)>,
-    pub rm_desc:
-        ::core::option::Option<unsafe extern "C" fn(buf: StringInfo, record: *mut XLogReaderState)>,
-    pub rm_identify:
-        ::core::option::Option<unsafe extern "C" fn(info: uint8) -> *const ::core::ffi::c_char>,
-    pub rm_startup: ::core::option::Option<unsafe extern "C" fn()>,
-    pub rm_cleanup: ::core::option::Option<unsafe extern "C" fn()>,
+    pub rm_redo: ::core::option::Option<unsafe extern "C-unwind" fn(record: *mut XLogReaderState)>,
+    pub rm_desc: ::core::option::Option<
+        unsafe extern "C-unwind" fn(buf: StringInfo, record: *mut XLogReaderState),
+    >,
+    pub rm_identify: ::core::option::Option<
+        unsafe extern "C-unwind" fn(info: uint8) -> *const ::core::ffi::c_char,
+    >,
+    pub rm_startup: ::core::option::Option<unsafe extern "C-unwind" fn()>,
+    pub rm_cleanup: ::core::option::Option<unsafe extern "C-unwind" fn()>,
     pub rm_mask: ::core::option::Option<
-        unsafe extern "C" fn(pagedata: *mut ::core::ffi::c_char, blkno: BlockNumber),
+        unsafe extern "C-unwind" fn(pagedata: *mut ::core::ffi::c_char, blkno: BlockNumber),
     >,
     pub rm_decode: ::core::option::Option<
-        unsafe extern "C" fn(ctx: *mut LogicalDecodingContext, buf: *mut XLogRecordBuffer),
+        unsafe extern "C-unwind" fn(ctx: *mut LogicalDecodingContext, buf: *mut XLogRecordBuffer),
     >,
 }
 impl Default for RmgrData {
@@ -25316,7 +22250,6 @@ impl Default for RmgrData {
     }
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct CheckPoint {
     pub redo: XLogRecPtr,
     pub ThisTimeLineID: TimeLineID,
@@ -25356,7 +22289,6 @@ pub mod DBState {
     pub const DB_IN_PRODUCTION: Type = 6;
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct ControlFileData {
     pub system_identifier: uint64,
     pub pg_control_version: uint32,
@@ -25491,6 +22423,222 @@ pub mod SharedDependencyType {
 pub struct ObjectAddresses {
     _unused: [u8; 0],
 }
+pub type CatalogIndexState = *mut ResultRelInfo;
+pub mod ParseExprKind {
+    pub type Type = ::core::ffi::c_uint;
+    pub const EXPR_KIND_NONE: Type = 0;
+    pub const EXPR_KIND_OTHER: Type = 1;
+    pub const EXPR_KIND_JOIN_ON: Type = 2;
+    pub const EXPR_KIND_JOIN_USING: Type = 3;
+    pub const EXPR_KIND_FROM_SUBSELECT: Type = 4;
+    pub const EXPR_KIND_FROM_FUNCTION: Type = 5;
+    pub const EXPR_KIND_WHERE: Type = 6;
+    pub const EXPR_KIND_HAVING: Type = 7;
+    pub const EXPR_KIND_FILTER: Type = 8;
+    pub const EXPR_KIND_WINDOW_PARTITION: Type = 9;
+    pub const EXPR_KIND_WINDOW_ORDER: Type = 10;
+    pub const EXPR_KIND_WINDOW_FRAME_RANGE: Type = 11;
+    pub const EXPR_KIND_WINDOW_FRAME_ROWS: Type = 12;
+    pub const EXPR_KIND_WINDOW_FRAME_GROUPS: Type = 13;
+    pub const EXPR_KIND_SELECT_TARGET: Type = 14;
+    pub const EXPR_KIND_INSERT_TARGET: Type = 15;
+    pub const EXPR_KIND_UPDATE_SOURCE: Type = 16;
+    pub const EXPR_KIND_UPDATE_TARGET: Type = 17;
+    pub const EXPR_KIND_MERGE_WHEN: Type = 18;
+    pub const EXPR_KIND_GROUP_BY: Type = 19;
+    pub const EXPR_KIND_ORDER_BY: Type = 20;
+    pub const EXPR_KIND_DISTINCT_ON: Type = 21;
+    pub const EXPR_KIND_LIMIT: Type = 22;
+    pub const EXPR_KIND_OFFSET: Type = 23;
+    pub const EXPR_KIND_RETURNING: Type = 24;
+    pub const EXPR_KIND_MERGE_RETURNING: Type = 25;
+    pub const EXPR_KIND_VALUES: Type = 26;
+    pub const EXPR_KIND_VALUES_SINGLE: Type = 27;
+    pub const EXPR_KIND_CHECK_CONSTRAINT: Type = 28;
+    pub const EXPR_KIND_DOMAIN_CHECK: Type = 29;
+    pub const EXPR_KIND_COLUMN_DEFAULT: Type = 30;
+    pub const EXPR_KIND_FUNCTION_DEFAULT: Type = 31;
+    pub const EXPR_KIND_INDEX_EXPRESSION: Type = 32;
+    pub const EXPR_KIND_INDEX_PREDICATE: Type = 33;
+    pub const EXPR_KIND_STATS_EXPRESSION: Type = 34;
+    pub const EXPR_KIND_ALTER_COL_TRANSFORM: Type = 35;
+    pub const EXPR_KIND_EXECUTE_PARAMETER: Type = 36;
+    pub const EXPR_KIND_TRIGGER_WHEN: Type = 37;
+    pub const EXPR_KIND_POLICY: Type = 38;
+    pub const EXPR_KIND_PARTITION_BOUND: Type = 39;
+    pub const EXPR_KIND_PARTITION_EXPRESSION: Type = 40;
+    pub const EXPR_KIND_CALL_ARGUMENT: Type = 41;
+    pub const EXPR_KIND_COPY_WHERE: Type = 42;
+    pub const EXPR_KIND_GENERATED_COLUMN: Type = 43;
+    pub const EXPR_KIND_CYCLE_MARK: Type = 44;
+}
+pub type PreParseColumnRefHook = ::core::option::Option<
+    unsafe extern "C-unwind" fn(pstate: *mut ParseState, cref: *mut ColumnRef) -> *mut Node,
+>;
+pub type PostParseColumnRefHook = ::core::option::Option<
+    unsafe extern "C-unwind" fn(
+        pstate: *mut ParseState,
+        cref: *mut ColumnRef,
+        var: *mut Node,
+    ) -> *mut Node,
+>;
+pub type ParseParamRefHook = ::core::option::Option<
+    unsafe extern "C-unwind" fn(pstate: *mut ParseState, pref: *mut ParamRef) -> *mut Node,
+>;
+pub type CoerceParamHook = ::core::option::Option<
+    unsafe extern "C-unwind" fn(
+        pstate: *mut ParseState,
+        param: *mut Param,
+        targetTypeId: Oid,
+        targetTypeMod: int32,
+        location: ::core::ffi::c_int,
+    ) -> *mut Node,
+>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ParseState {
+    pub parentParseState: *mut ParseState,
+    pub p_sourcetext: *const ::core::ffi::c_char,
+    pub p_rtable: *mut List,
+    pub p_rteperminfos: *mut List,
+    pub p_joinexprs: *mut List,
+    pub p_nullingrels: *mut List,
+    pub p_joinlist: *mut List,
+    pub p_namespace: *mut List,
+    pub p_lateral_active: bool,
+    pub p_ctenamespace: *mut List,
+    pub p_future_ctes: *mut List,
+    pub p_parent_cte: *mut CommonTableExpr,
+    pub p_target_relation: Relation,
+    pub p_target_nsitem: *mut ParseNamespaceItem,
+    pub p_is_insert: bool,
+    pub p_windowdefs: *mut List,
+    pub p_expr_kind: ParseExprKind::Type,
+    pub p_next_resno: ::core::ffi::c_int,
+    pub p_multiassign_exprs: *mut List,
+    pub p_locking_clause: *mut List,
+    pub p_locked_from_parent: bool,
+    pub p_resolve_unknowns: bool,
+    pub p_queryEnv: *mut QueryEnvironment,
+    pub p_hasAggs: bool,
+    pub p_hasWindowFuncs: bool,
+    pub p_hasTargetSRFs: bool,
+    pub p_hasSubLinks: bool,
+    pub p_hasModifyingCTE: bool,
+    pub p_last_srf: *mut Node,
+    pub p_pre_columnref_hook: PreParseColumnRefHook,
+    pub p_post_columnref_hook: PostParseColumnRefHook,
+    pub p_paramref_hook: ParseParamRefHook,
+    pub p_coerce_param_hook: CoerceParamHook,
+    pub p_ref_hook_state: *mut ::core::ffi::c_void,
+}
+impl Default for ParseState {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ParseNamespaceItem {
+    pub p_names: *mut Alias,
+    pub p_rte: *mut RangeTblEntry,
+    pub p_rtindex: ::core::ffi::c_int,
+    pub p_perminfo: *mut RTEPermissionInfo,
+    pub p_nscolumns: *mut ParseNamespaceColumn,
+    pub p_rel_visible: bool,
+    pub p_cols_visible: bool,
+    pub p_lateral_only: bool,
+    pub p_lateral_ok: bool,
+}
+impl Default for ParseNamespaceItem {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ParseNamespaceColumn {
+    pub p_varno: Index,
+    pub p_varattno: AttrNumber,
+    pub p_vartype: Oid,
+    pub p_vartypmod: int32,
+    pub p_varcollid: Oid,
+    pub p_varnosyn: Index,
+    pub p_varattnosyn: AttrNumber,
+    pub p_dontexpand: bool,
+}
+impl Default for ParseNamespaceColumn {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ParseCallbackState {
+    pub pstate: *mut ParseState,
+    pub location: ::core::ffi::c_int,
+    pub errcallback: ErrorContextCallback,
+}
+impl Default for ParseCallbackState {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RawColumnDefault {
+    pub attnum: AttrNumber,
+    pub raw_default: *mut Node,
+    pub missingMode: bool,
+    pub generated: ::core::ffi::c_char,
+}
+impl Default for RawColumnDefault {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct CookedConstraint {
+    pub contype: ConstrType::Type,
+    pub conoid: Oid,
+    pub name: *mut ::core::ffi::c_char,
+    pub attnum: AttrNumber,
+    pub expr: *mut Node,
+    pub skip_validation: bool,
+    pub is_local: bool,
+    pub inhcount: ::core::ffi::c_int,
+    pub is_no_inherit: bool,
+}
+impl Default for CookedConstraint {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 pub mod IndexStateFlagsAction {
     pub type Type = ::core::ffi::c_uint;
     pub const INDEX_CREATE_SET_READY: Type = 0;
@@ -25530,7 +22678,6 @@ impl Default for ValidateIndexState {
         }
     }
 }
-pub type CatalogIndexState = *mut ResultRelInfo;
 #[repr(C)]
 #[derive(Debug)]
 pub struct _FuncCandidateList {
@@ -25584,7 +22731,7 @@ pub mod RVROption {
     pub const RVR_SKIP_LOCKED: Type = 4;
 }
 pub type RangeVarGetRelidCallback = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         relation: *const RangeVar,
         relId: Oid,
         oldRelId: Oid,
@@ -25632,7 +22779,7 @@ pub struct ObjectAccessNamespaceSearch {
     pub result: bool,
 }
 pub type object_access_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         access: ObjectAccessType::Type,
         classId: Oid,
         objectId: Oid,
@@ -25641,7 +22788,7 @@ pub type object_access_hook_type = ::core::option::Option<
     ),
 >;
 pub type object_access_hook_type_str = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         access: ObjectAccessType::Type,
         classId: Oid,
         objectStr: *const ::core::ffi::c_char,
@@ -25976,182 +23123,6 @@ impl Default for FormData_pg_proc {
     }
 }
 pub type Form_pg_proc = *mut FormData_pg_proc;
-pub mod ParseExprKind {
-    pub type Type = ::core::ffi::c_uint;
-    pub const EXPR_KIND_NONE: Type = 0;
-    pub const EXPR_KIND_OTHER: Type = 1;
-    pub const EXPR_KIND_JOIN_ON: Type = 2;
-    pub const EXPR_KIND_JOIN_USING: Type = 3;
-    pub const EXPR_KIND_FROM_SUBSELECT: Type = 4;
-    pub const EXPR_KIND_FROM_FUNCTION: Type = 5;
-    pub const EXPR_KIND_WHERE: Type = 6;
-    pub const EXPR_KIND_HAVING: Type = 7;
-    pub const EXPR_KIND_FILTER: Type = 8;
-    pub const EXPR_KIND_WINDOW_PARTITION: Type = 9;
-    pub const EXPR_KIND_WINDOW_ORDER: Type = 10;
-    pub const EXPR_KIND_WINDOW_FRAME_RANGE: Type = 11;
-    pub const EXPR_KIND_WINDOW_FRAME_ROWS: Type = 12;
-    pub const EXPR_KIND_WINDOW_FRAME_GROUPS: Type = 13;
-    pub const EXPR_KIND_SELECT_TARGET: Type = 14;
-    pub const EXPR_KIND_INSERT_TARGET: Type = 15;
-    pub const EXPR_KIND_UPDATE_SOURCE: Type = 16;
-    pub const EXPR_KIND_UPDATE_TARGET: Type = 17;
-    pub const EXPR_KIND_MERGE_WHEN: Type = 18;
-    pub const EXPR_KIND_GROUP_BY: Type = 19;
-    pub const EXPR_KIND_ORDER_BY: Type = 20;
-    pub const EXPR_KIND_DISTINCT_ON: Type = 21;
-    pub const EXPR_KIND_LIMIT: Type = 22;
-    pub const EXPR_KIND_OFFSET: Type = 23;
-    pub const EXPR_KIND_RETURNING: Type = 24;
-    pub const EXPR_KIND_MERGE_RETURNING: Type = 25;
-    pub const EXPR_KIND_VALUES: Type = 26;
-    pub const EXPR_KIND_VALUES_SINGLE: Type = 27;
-    pub const EXPR_KIND_CHECK_CONSTRAINT: Type = 28;
-    pub const EXPR_KIND_DOMAIN_CHECK: Type = 29;
-    pub const EXPR_KIND_COLUMN_DEFAULT: Type = 30;
-    pub const EXPR_KIND_FUNCTION_DEFAULT: Type = 31;
-    pub const EXPR_KIND_INDEX_EXPRESSION: Type = 32;
-    pub const EXPR_KIND_INDEX_PREDICATE: Type = 33;
-    pub const EXPR_KIND_STATS_EXPRESSION: Type = 34;
-    pub const EXPR_KIND_ALTER_COL_TRANSFORM: Type = 35;
-    pub const EXPR_KIND_EXECUTE_PARAMETER: Type = 36;
-    pub const EXPR_KIND_TRIGGER_WHEN: Type = 37;
-    pub const EXPR_KIND_POLICY: Type = 38;
-    pub const EXPR_KIND_PARTITION_BOUND: Type = 39;
-    pub const EXPR_KIND_PARTITION_EXPRESSION: Type = 40;
-    pub const EXPR_KIND_CALL_ARGUMENT: Type = 41;
-    pub const EXPR_KIND_COPY_WHERE: Type = 42;
-    pub const EXPR_KIND_GENERATED_COLUMN: Type = 43;
-    pub const EXPR_KIND_CYCLE_MARK: Type = 44;
-}
-pub type PreParseColumnRefHook = ::core::option::Option<
-    unsafe extern "C" fn(pstate: *mut ParseState, cref: *mut ColumnRef) -> *mut Node,
->;
-pub type PostParseColumnRefHook = ::core::option::Option<
-    unsafe extern "C" fn(
-        pstate: *mut ParseState,
-        cref: *mut ColumnRef,
-        var: *mut Node,
-    ) -> *mut Node,
->;
-pub type ParseParamRefHook = ::core::option::Option<
-    unsafe extern "C" fn(pstate: *mut ParseState, pref: *mut ParamRef) -> *mut Node,
->;
-pub type CoerceParamHook = ::core::option::Option<
-    unsafe extern "C" fn(
-        pstate: *mut ParseState,
-        param: *mut Param,
-        targetTypeId: Oid,
-        targetTypeMod: int32,
-        location: ::core::ffi::c_int,
-    ) -> *mut Node,
->;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct ParseState {
-    pub parentParseState: *mut ParseState,
-    pub p_sourcetext: *const ::core::ffi::c_char,
-    pub p_rtable: *mut List,
-    pub p_rteperminfos: *mut List,
-    pub p_joinexprs: *mut List,
-    pub p_nullingrels: *mut List,
-    pub p_joinlist: *mut List,
-    pub p_namespace: *mut List,
-    pub p_lateral_active: bool,
-    pub p_ctenamespace: *mut List,
-    pub p_future_ctes: *mut List,
-    pub p_parent_cte: *mut CommonTableExpr,
-    pub p_target_relation: Relation,
-    pub p_target_nsitem: *mut ParseNamespaceItem,
-    pub p_is_insert: bool,
-    pub p_windowdefs: *mut List,
-    pub p_expr_kind: ParseExprKind::Type,
-    pub p_next_resno: ::core::ffi::c_int,
-    pub p_multiassign_exprs: *mut List,
-    pub p_locking_clause: *mut List,
-    pub p_locked_from_parent: bool,
-    pub p_resolve_unknowns: bool,
-    pub p_queryEnv: *mut QueryEnvironment,
-    pub p_hasAggs: bool,
-    pub p_hasWindowFuncs: bool,
-    pub p_hasTargetSRFs: bool,
-    pub p_hasSubLinks: bool,
-    pub p_hasModifyingCTE: bool,
-    pub p_last_srf: *mut Node,
-    pub p_pre_columnref_hook: PreParseColumnRefHook,
-    pub p_post_columnref_hook: PostParseColumnRefHook,
-    pub p_paramref_hook: ParseParamRefHook,
-    pub p_coerce_param_hook: CoerceParamHook,
-    pub p_ref_hook_state: *mut ::core::ffi::c_void,
-}
-impl Default for ParseState {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct ParseNamespaceItem {
-    pub p_names: *mut Alias,
-    pub p_rte: *mut RangeTblEntry,
-    pub p_rtindex: ::core::ffi::c_int,
-    pub p_perminfo: *mut RTEPermissionInfo,
-    pub p_nscolumns: *mut ParseNamespaceColumn,
-    pub p_rel_visible: bool,
-    pub p_cols_visible: bool,
-    pub p_lateral_only: bool,
-    pub p_lateral_ok: bool,
-}
-impl Default for ParseNamespaceItem {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct ParseNamespaceColumn {
-    pub p_varno: Index,
-    pub p_varattno: AttrNumber,
-    pub p_vartype: Oid,
-    pub p_vartypmod: int32,
-    pub p_varcollid: Oid,
-    pub p_varnosyn: Index,
-    pub p_varattnosyn: AttrNumber,
-    pub p_dontexpand: bool,
-}
-impl Default for ParseNamespaceColumn {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct ParseCallbackState {
-    pub pstate: *mut ParseState,
-    pub location: ::core::ffi::c_int,
-    pub errcallback: ErrorContextCallback,
-}
-impl Default for ParseCallbackState {
-    fn default() -> Self {
-        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct AclItem {
@@ -26213,6 +23184,26 @@ impl Default for FormData_pg_seclabel {
         }
     }
 }
+#[repr(C)]
+#[derive(Debug)]
+pub struct FormData_pg_statistic_ext {
+    pub oid: Oid,
+    pub stxrelid: Oid,
+    pub stxname: NameData,
+    pub stxnamespace: Oid,
+    pub stxowner: Oid,
+    pub stxkeys: int2vector,
+}
+impl Default for FormData_pg_statistic_ext {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type Form_pg_statistic_ext = *mut FormData_pg_statistic_ext;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct FormData_pg_tablespace {
@@ -26387,19 +23378,19 @@ pub struct CopyToStateData {
 }
 pub type CopyToState = *mut CopyToStateData;
 pub type copy_data_source_cb = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         outbuf: *mut ::core::ffi::c_void,
         minread: ::core::ffi::c_int,
         maxread: ::core::ffi::c_int,
     ) -> ::core::ffi::c_int,
 >;
 pub type copy_data_dest_cb = ::core::option::Option<
-    unsafe extern "C" fn(data: *mut ::core::ffi::c_void, len: ::core::ffi::c_int),
+    unsafe extern "C-unwind" fn(data: *mut ::core::ffi::c_void, len: ::core::ffi::c_int),
 >;
 pub type EOM_get_flat_size_method =
-    ::core::option::Option<unsafe extern "C" fn(eohptr: *mut ExpandedObjectHeader) -> Size>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(eohptr: *mut ExpandedObjectHeader) -> Size>;
 pub type EOM_flatten_into_method = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         eohptr: *mut ExpandedObjectHeader,
         result: *mut ::core::ffi::c_void,
         allocated_size: Size,
@@ -26893,7 +23884,7 @@ impl Default for ExplainState {
     }
 }
 pub type ExplainOneQuery_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         query: *mut Query,
         cursorOptions: ::core::ffi::c_int,
         into: *mut IntoClause,
@@ -26904,7 +23895,7 @@ pub type ExplainOneQuery_hook_type = ::core::option::Option<
     ),
 >;
 pub type explain_get_index_name_hook_type =
-    ::core::option::Option<unsafe extern "C" fn(indexId: Oid) -> *const ::core::ffi::c_char>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(indexId: Oid) -> *const ::core::ffi::c_char>;
 pub mod PlanCacheMode {
     pub type Type = ::core::ffi::c_uint;
     pub const PLAN_CACHE_MODE_AUTO: Type = 0;
@@ -27017,7 +24008,7 @@ impl Default for PreparedStatement {
     }
 }
 pub type check_object_relabel_type = ::core::option::Option<
-    unsafe extern "C" fn(object: *const ObjectAddress, seclabel: *const ::core::ffi::c_char),
+    unsafe extern "C-unwind" fn(object: *const ObjectAddress, seclabel: *const ::core::ffi::c_char),
 >;
 #[repr(C)]
 #[derive(Debug)]
@@ -27183,54 +24174,60 @@ impl Default for config_enum_entry {
     }
 }
 pub type GucBoolCheckHook = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         newval: *mut bool,
         extra: *mut *mut ::core::ffi::c_void,
         source: GucSource::Type,
     ) -> bool,
 >;
 pub type GucIntCheckHook = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         newval: *mut ::core::ffi::c_int,
         extra: *mut *mut ::core::ffi::c_void,
         source: GucSource::Type,
     ) -> bool,
 >;
 pub type GucRealCheckHook = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         newval: *mut f64,
         extra: *mut *mut ::core::ffi::c_void,
         source: GucSource::Type,
     ) -> bool,
 >;
 pub type GucStringCheckHook = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         newval: *mut *mut ::core::ffi::c_char,
         extra: *mut *mut ::core::ffi::c_void,
         source: GucSource::Type,
     ) -> bool,
 >;
 pub type GucEnumCheckHook = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         newval: *mut ::core::ffi::c_int,
         extra: *mut *mut ::core::ffi::c_void,
         source: GucSource::Type,
     ) -> bool,
 >;
-pub type GucBoolAssignHook =
-    ::core::option::Option<unsafe extern "C" fn(newval: bool, extra: *mut ::core::ffi::c_void)>;
-pub type GucIntAssignHook = ::core::option::Option<
-    unsafe extern "C" fn(newval: ::core::ffi::c_int, extra: *mut ::core::ffi::c_void),
+pub type GucBoolAssignHook = ::core::option::Option<
+    unsafe extern "C-unwind" fn(newval: bool, extra: *mut ::core::ffi::c_void),
 >;
-pub type GucRealAssignHook =
-    ::core::option::Option<unsafe extern "C" fn(newval: f64, extra: *mut ::core::ffi::c_void)>;
+pub type GucIntAssignHook = ::core::option::Option<
+    unsafe extern "C-unwind" fn(newval: ::core::ffi::c_int, extra: *mut ::core::ffi::c_void),
+>;
+pub type GucRealAssignHook = ::core::option::Option<
+    unsafe extern "C-unwind" fn(newval: f64, extra: *mut ::core::ffi::c_void),
+>;
 pub type GucStringAssignHook = ::core::option::Option<
-    unsafe extern "C" fn(newval: *const ::core::ffi::c_char, extra: *mut ::core::ffi::c_void),
+    unsafe extern "C-unwind" fn(
+        newval: *const ::core::ffi::c_char,
+        extra: *mut ::core::ffi::c_void,
+    ),
 >;
 pub type GucEnumAssignHook = ::core::option::Option<
-    unsafe extern "C" fn(newval: ::core::ffi::c_int, extra: *mut ::core::ffi::c_void),
+    unsafe extern "C-unwind" fn(newval: ::core::ffi::c_int, extra: *mut ::core::ffi::c_void),
 >;
-pub type GucShowHook = ::core::option::Option<unsafe extern "C" fn() -> *const ::core::ffi::c_char>;
+pub type GucShowHook =
+    ::core::option::Option<unsafe extern "C-unwind" fn() -> *const ::core::ffi::c_char>;
 pub mod GucAction {
     pub type Type = ::core::ffi::c_uint;
     pub const GUC_ACTION_SET: Type = 0;
@@ -27238,7 +24235,7 @@ pub mod GucAction {
     pub const GUC_ACTION_SAVE: Type = 2;
 }
 pub type check_password_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         username: *const ::core::ffi::c_char,
         shadow_pass: *const ::core::ffi::c_char,
         password_type: PasswordType::Type,
@@ -27246,7 +24243,7 @@ pub type check_password_hook_type = ::core::option::Option<
         validuntil_null: bool,
     ),
 >;
-pub type bgworker_main_type = ::core::option::Option<unsafe extern "C" fn(main_arg: Datum)>;
+pub type bgworker_main_type = ::core::option::Option<unsafe extern "C-unwind" fn(main_arg: Datum)>;
 pub mod BgWorkerStartTime {
     pub type Type = ::core::ffi::c_uint;
     pub const BgWorkerStart_PostmasterStart: Type = 0;
@@ -27491,7 +24488,7 @@ pub mod shm_mq_result {
     pub const SHM_MQ_DETACHED: Type = 2;
 }
 pub type parallel_worker_main_type =
-    ::core::option::Option<unsafe extern "C" fn(seg: *mut dsm_segment, toc: *mut shm_toc)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(seg: *mut dsm_segment, toc: *mut shm_toc)>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct ParallelWorkerInfo {
@@ -27619,14 +24616,14 @@ pub struct ParallelVacuumState {
 }
 pub type VacAttrStatsP = *mut VacAttrStats;
 pub type AnalyzeAttrFetchFunc = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         stats: VacAttrStatsP,
         rownum: ::core::ffi::c_int,
         isNull: *mut bool,
     ) -> Datum,
 >;
 pub type AnalyzeAttrComputeStatsFunc = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         stats: VacAttrStatsP,
         fetchfunc: AnalyzeAttrFetchFunc,
         samplerows: ::core::ffi::c_int,
@@ -27708,7 +24705,6 @@ impl Default for VacuumParams {
     }
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
 pub struct VacuumCutoffs {
     pub relfrozenxid: TransactionId,
     pub relminmxid: MultiXactId,
@@ -27716,6 +24712,15 @@ pub struct VacuumCutoffs {
     pub OldestMxact: MultiXactId,
     pub FreezeLimit: TransactionId,
     pub MultiXactCutoff: MultiXactId,
+}
+impl Default for VacuumCutoffs {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -27878,10 +24883,14 @@ pub struct ScalarArrayOpExprHashTable {
     _unused: [u8; 0],
 }
 pub type ExecEvalSubroutine = ::core::option::Option<
-    unsafe extern "C" fn(state: *mut ExprState, op: *mut ExprEvalStep, econtext: *mut ExprContext),
+    unsafe extern "C-unwind" fn(
+        state: *mut ExprState,
+        op: *mut ExprEvalStep,
+        econtext: *mut ExprContext,
+    ),
 >;
 pub type ExecEvalBoolSubroutine = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         state: *mut ExprState,
         op: *mut ExprEvalStep,
         econtext: *mut ExprContext,
@@ -28146,6 +25155,7 @@ pub struct ExprEvalStep__bindgen_ty_1__bindgen_ty_7 {
     pub fcinfo_data: FunctionCallInfo,
     pub fn_addr: PGFunction,
     pub nargs: ::core::ffi::c_int,
+    pub make_ro: bool,
 }
 impl Default for ExprEvalStep__bindgen_ty_1__bindgen_ty_7 {
     fn default() -> Self {
@@ -28875,7 +25885,7 @@ pub struct PortalData {
     pub prepStmtName: *const ::core::ffi::c_char,
     pub portalContext: MemoryContext,
     pub resowner: ResourceOwner,
-    pub cleanup: ::core::option::Option<unsafe extern "C" fn(portal: Portal)>,
+    pub cleanup: ::core::option::Option<unsafe extern "C-unwind" fn(portal: Portal)>,
     pub createSubid: SubTransactionId,
     pub activeSubid: SubTransactionId,
     pub createLevel: ::core::ffi::c_int,
@@ -29299,7 +26309,18 @@ pub struct IndexOptInfo {
     pub amhasgetbitmap: bool,
     pub amcanparallel: bool,
     pub amcanmarkpos: bool,
-    pub amcostestimate: ::core::option::Option<unsafe extern "C" fn()>,
+    pub amcostestimate: ::core::option::Option<
+        unsafe extern "C-unwind" fn(
+            arg1: *mut PlannerInfo,
+            arg2: *mut IndexPath,
+            arg3: f64,
+            arg4: *mut Cost,
+            arg5: *mut Cost,
+            arg6: *mut Selectivity,
+            arg7: *mut f64,
+            arg8: *mut f64,
+        ),
+    >,
 }
 impl Default for IndexOptInfo {
     fn default() -> Self {
@@ -30563,13 +27584,21 @@ impl Default for AggTransInfo {
     }
 }
 pub type GetForeignRelSize_function = ::core::option::Option<
-    unsafe extern "C" fn(root: *mut PlannerInfo, baserel: *mut RelOptInfo, foreigntableid: Oid),
+    unsafe extern "C-unwind" fn(
+        root: *mut PlannerInfo,
+        baserel: *mut RelOptInfo,
+        foreigntableid: Oid,
+    ),
 >;
 pub type GetForeignPaths_function = ::core::option::Option<
-    unsafe extern "C" fn(root: *mut PlannerInfo, baserel: *mut RelOptInfo, foreigntableid: Oid),
+    unsafe extern "C-unwind" fn(
+        root: *mut PlannerInfo,
+        baserel: *mut RelOptInfo,
+        foreigntableid: Oid,
+    ),
 >;
 pub type GetForeignPlan_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         baserel: *mut RelOptInfo,
         foreigntableid: Oid,
@@ -30580,20 +27609,20 @@ pub type GetForeignPlan_function = ::core::option::Option<
     ) -> *mut ForeignScan,
 >;
 pub type BeginForeignScan_function = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ForeignScanState, eflags: ::core::ffi::c_int),
+    unsafe extern "C-unwind" fn(node: *mut ForeignScanState, eflags: ::core::ffi::c_int),
 >;
 pub type IterateForeignScan_function = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ForeignScanState) -> *mut TupleTableSlot,
+    unsafe extern "C-unwind" fn(node: *mut ForeignScanState) -> *mut TupleTableSlot,
 >;
 pub type RecheckForeignScan_function = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ForeignScanState, slot: *mut TupleTableSlot) -> bool,
+    unsafe extern "C-unwind" fn(node: *mut ForeignScanState, slot: *mut TupleTableSlot) -> bool,
 >;
 pub type ReScanForeignScan_function =
-    ::core::option::Option<unsafe extern "C" fn(node: *mut ForeignScanState)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut ForeignScanState)>;
 pub type EndForeignScan_function =
-    ::core::option::Option<unsafe extern "C" fn(node: *mut ForeignScanState)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut ForeignScanState)>;
 pub type GetForeignJoinPaths_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         joinrel: *mut RelOptInfo,
         outerrel: *mut RelOptInfo,
@@ -30603,7 +27632,7 @@ pub type GetForeignJoinPaths_function = ::core::option::Option<
     ),
 >;
 pub type GetForeignUpperPaths_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         stage: UpperRelationKind::Type,
         input_rel: *mut RelOptInfo,
@@ -30612,7 +27641,7 @@ pub type GetForeignUpperPaths_function = ::core::option::Option<
     ),
 >;
 pub type AddForeignUpdateTargets_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         rtindex: Index,
         target_rte: *mut RangeTblEntry,
@@ -30620,7 +27649,7 @@ pub type AddForeignUpdateTargets_function = ::core::option::Option<
     ),
 >;
 pub type PlanForeignModify_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         plan: *mut ModifyTable,
         resultRelation: Index,
@@ -30628,7 +27657,7 @@ pub type PlanForeignModify_function = ::core::option::Option<
     ) -> *mut List,
 >;
 pub type BeginForeignModify_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         mtstate: *mut ModifyTableState,
         rinfo: *mut ResultRelInfo,
         fdw_private: *mut List,
@@ -30637,7 +27666,7 @@ pub type BeginForeignModify_function = ::core::option::Option<
     ),
 >;
 pub type ExecForeignInsert_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         estate: *mut EState,
         rinfo: *mut ResultRelInfo,
         slot: *mut TupleTableSlot,
@@ -30645,7 +27674,7 @@ pub type ExecForeignInsert_function = ::core::option::Option<
     ) -> *mut TupleTableSlot,
 >;
 pub type ExecForeignBatchInsert_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         estate: *mut EState,
         rinfo: *mut ResultRelInfo,
         slots: *mut *mut TupleTableSlot,
@@ -30653,10 +27682,11 @@ pub type ExecForeignBatchInsert_function = ::core::option::Option<
         numSlots: *mut ::core::ffi::c_int,
     ) -> *mut *mut TupleTableSlot,
 >;
-pub type GetForeignModifyBatchSize_function =
-    ::core::option::Option<unsafe extern "C" fn(rinfo: *mut ResultRelInfo) -> ::core::ffi::c_int>;
+pub type GetForeignModifyBatchSize_function = ::core::option::Option<
+    unsafe extern "C-unwind" fn(rinfo: *mut ResultRelInfo) -> ::core::ffi::c_int,
+>;
 pub type ExecForeignUpdate_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         estate: *mut EState,
         rinfo: *mut ResultRelInfo,
         slot: *mut TupleTableSlot,
@@ -30664,24 +27694,26 @@ pub type ExecForeignUpdate_function = ::core::option::Option<
     ) -> *mut TupleTableSlot,
 >;
 pub type ExecForeignDelete_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         estate: *mut EState,
         rinfo: *mut ResultRelInfo,
         slot: *mut TupleTableSlot,
         planSlot: *mut TupleTableSlot,
     ) -> *mut TupleTableSlot,
 >;
-pub type EndForeignModify_function =
-    ::core::option::Option<unsafe extern "C" fn(estate: *mut EState, rinfo: *mut ResultRelInfo)>;
-pub type BeginForeignInsert_function = ::core::option::Option<
-    unsafe extern "C" fn(mtstate: *mut ModifyTableState, rinfo: *mut ResultRelInfo),
+pub type EndForeignModify_function = ::core::option::Option<
+    unsafe extern "C-unwind" fn(estate: *mut EState, rinfo: *mut ResultRelInfo),
 >;
-pub type EndForeignInsert_function =
-    ::core::option::Option<unsafe extern "C" fn(estate: *mut EState, rinfo: *mut ResultRelInfo)>;
+pub type BeginForeignInsert_function = ::core::option::Option<
+    unsafe extern "C-unwind" fn(mtstate: *mut ModifyTableState, rinfo: *mut ResultRelInfo),
+>;
+pub type EndForeignInsert_function = ::core::option::Option<
+    unsafe extern "C-unwind" fn(estate: *mut EState, rinfo: *mut ResultRelInfo),
+>;
 pub type IsForeignRelUpdatable_function =
-    ::core::option::Option<unsafe extern "C" fn(rel: Relation) -> ::core::ffi::c_int>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(rel: Relation) -> ::core::ffi::c_int>;
 pub type PlanDirectModify_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         plan: *mut ModifyTable,
         resultRelation: Index,
@@ -30689,21 +27721,21 @@ pub type PlanDirectModify_function = ::core::option::Option<
     ) -> bool,
 >;
 pub type BeginDirectModify_function = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ForeignScanState, eflags: ::core::ffi::c_int),
+    unsafe extern "C-unwind" fn(node: *mut ForeignScanState, eflags: ::core::ffi::c_int),
 >;
 pub type IterateDirectModify_function = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ForeignScanState) -> *mut TupleTableSlot,
+    unsafe extern "C-unwind" fn(node: *mut ForeignScanState) -> *mut TupleTableSlot,
 >;
 pub type EndDirectModify_function =
-    ::core::option::Option<unsafe extern "C" fn(node: *mut ForeignScanState)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut ForeignScanState)>;
 pub type GetForeignRowMarkType_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rte: *mut RangeTblEntry,
         strength: LockClauseStrength::Type,
     ) -> RowMarkType::Type,
 >;
 pub type RefetchForeignRow_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         estate: *mut EState,
         erm: *mut ExecRowMark,
         rowid: Datum,
@@ -30712,10 +27744,10 @@ pub type RefetchForeignRow_function = ::core::option::Option<
     ),
 >;
 pub type ExplainForeignScan_function = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ForeignScanState, es: *mut ExplainState),
+    unsafe extern "C-unwind" fn(node: *mut ForeignScanState, es: *mut ExplainState),
 >;
 pub type ExplainForeignModify_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         mtstate: *mut ModifyTableState,
         rinfo: *mut ResultRelInfo,
         fdw_private: *mut List,
@@ -30724,10 +27756,10 @@ pub type ExplainForeignModify_function = ::core::option::Option<
     ),
 >;
 pub type ExplainDirectModify_function = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ForeignScanState, es: *mut ExplainState),
+    unsafe extern "C-unwind" fn(node: *mut ForeignScanState, es: *mut ExplainState),
 >;
 pub type AcquireSampleRowsFunc = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         relation: Relation,
         elevel: ::core::ffi::c_int,
         rows: *mut HeapTuple,
@@ -30737,66 +27769,66 @@ pub type AcquireSampleRowsFunc = ::core::option::Option<
     ) -> ::core::ffi::c_int,
 >;
 pub type AnalyzeForeignTable_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         relation: Relation,
         func: *mut AcquireSampleRowsFunc,
         totalpages: *mut BlockNumber,
     ) -> bool,
 >;
 pub type ImportForeignSchema_function = ::core::option::Option<
-    unsafe extern "C" fn(stmt: *mut ImportForeignSchemaStmt, serverOid: Oid) -> *mut List,
+    unsafe extern "C-unwind" fn(stmt: *mut ImportForeignSchemaStmt, serverOid: Oid) -> *mut List,
 >;
 pub type ExecForeignTruncate_function = ::core::option::Option<
-    unsafe extern "C" fn(rels: *mut List, behavior: DropBehavior::Type, restart_seqs: bool),
+    unsafe extern "C-unwind" fn(rels: *mut List, behavior: DropBehavior::Type, restart_seqs: bool),
 >;
 pub type EstimateDSMForeignScan_function = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut ForeignScanState, pcxt: *mut ParallelContext) -> Size,
+    unsafe extern "C-unwind" fn(node: *mut ForeignScanState, pcxt: *mut ParallelContext) -> Size,
 >;
 pub type InitializeDSMForeignScan_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         node: *mut ForeignScanState,
         pcxt: *mut ParallelContext,
         coordinate: *mut ::core::ffi::c_void,
     ),
 >;
 pub type ReInitializeDSMForeignScan_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         node: *mut ForeignScanState,
         pcxt: *mut ParallelContext,
         coordinate: *mut ::core::ffi::c_void,
     ),
 >;
 pub type InitializeWorkerForeignScan_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         node: *mut ForeignScanState,
         toc: *mut shm_toc,
         coordinate: *mut ::core::ffi::c_void,
     ),
 >;
 pub type ShutdownForeignScan_function =
-    ::core::option::Option<unsafe extern "C" fn(node: *mut ForeignScanState)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut ForeignScanState)>;
 pub type IsForeignScanParallelSafe_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         rel: *mut RelOptInfo,
         rte: *mut RangeTblEntry,
     ) -> bool,
 >;
 pub type ReparameterizeForeignPathByChild_function = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         fdw_private: *mut List,
         child_rel: *mut RelOptInfo,
     ) -> *mut List,
 >;
 pub type IsForeignPathAsyncCapable_function =
-    ::core::option::Option<unsafe extern "C" fn(path: *mut ForeignPath) -> bool>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(path: *mut ForeignPath) -> bool>;
 pub type ForeignAsyncRequest_function =
-    ::core::option::Option<unsafe extern "C" fn(areq: *mut AsyncRequest)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(areq: *mut AsyncRequest)>;
 pub type ForeignAsyncConfigureWait_function =
-    ::core::option::Option<unsafe extern "C" fn(areq: *mut AsyncRequest)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(areq: *mut AsyncRequest)>;
 pub type ForeignAsyncNotify_function =
-    ::core::option::Option<unsafe extern "C" fn(areq: *mut AsyncRequest)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(areq: *mut AsyncRequest)>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct FdwRoutine {
@@ -30951,12 +27983,12 @@ pub struct JitContext {
     pub instr: JitInstrumentation,
 }
 pub type JitProviderInit =
-    ::core::option::Option<unsafe extern "C" fn(cb: *mut JitProviderCallbacks)>;
-pub type JitProviderResetAfterErrorCB = ::core::option::Option<unsafe extern "C" fn()>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(cb: *mut JitProviderCallbacks)>;
+pub type JitProviderResetAfterErrorCB = ::core::option::Option<unsafe extern "C-unwind" fn()>;
 pub type JitProviderReleaseContextCB =
-    ::core::option::Option<unsafe extern "C" fn(context: *mut JitContext)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(context: *mut JitContext)>;
 pub type JitProviderCompileExprCB =
-    ::core::option::Option<unsafe extern "C" fn(state: *mut ExprState) -> bool>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(state: *mut ExprState) -> bool>;
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct JitProviderCallbacks {
@@ -31027,36 +28059,36 @@ impl Default for pg_enc2name {
     }
 }
 pub type mb2wchar_with_len_converter = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         from: *const ::core::ffi::c_uchar,
         to: *mut pg_wchar,
         len: ::core::ffi::c_int,
     ) -> ::core::ffi::c_int,
 >;
 pub type wchar2mb_with_len_converter = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         from: *const pg_wchar,
         to: *mut ::core::ffi::c_uchar,
         len: ::core::ffi::c_int,
     ) -> ::core::ffi::c_int,
 >;
 pub type mblen_converter = ::core::option::Option<
-    unsafe extern "C" fn(mbstr: *const ::core::ffi::c_uchar) -> ::core::ffi::c_int,
+    unsafe extern "C-unwind" fn(mbstr: *const ::core::ffi::c_uchar) -> ::core::ffi::c_int,
 >;
 pub type mbdisplaylen_converter = ::core::option::Option<
-    unsafe extern "C" fn(mbstr: *const ::core::ffi::c_uchar) -> ::core::ffi::c_int,
+    unsafe extern "C-unwind" fn(mbstr: *const ::core::ffi::c_uchar) -> ::core::ffi::c_int,
 >;
 pub type mbcharacter_incrementer = ::core::option::Option<
-    unsafe extern "C" fn(mbstr: *mut ::core::ffi::c_uchar, len: ::core::ffi::c_int) -> bool,
+    unsafe extern "C-unwind" fn(mbstr: *mut ::core::ffi::c_uchar, len: ::core::ffi::c_int) -> bool,
 >;
 pub type mbchar_verifier = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         mbstr: *const ::core::ffi::c_uchar,
         len: ::core::ffi::c_int,
     ) -> ::core::ffi::c_int,
 >;
 pub type mbstr_verifier = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         mbstr: *const ::core::ffi::c_uchar,
         len: ::core::ffi::c_int,
     ) -> ::core::ffi::c_int,
@@ -31126,7 +28158,7 @@ pub struct pg_local_to_utf_combined {
     pub utf2: uint32,
 }
 pub type utf_local_conversion_func =
-    ::core::option::Option<unsafe extern "C" fn(code: uint32) -> uint32>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(code: uint32) -> uint32>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct ExtensibleNode {
@@ -31148,15 +28180,15 @@ pub struct ExtensibleNodeMethods {
     pub extnodename: *const ::core::ffi::c_char,
     pub node_size: Size,
     pub nodeCopy: ::core::option::Option<
-        unsafe extern "C" fn(newnode: *mut ExtensibleNode, oldnode: *const ExtensibleNode),
+        unsafe extern "C-unwind" fn(newnode: *mut ExtensibleNode, oldnode: *const ExtensibleNode),
     >,
     pub nodeEqual: ::core::option::Option<
-        unsafe extern "C" fn(a: *const ExtensibleNode, b: *const ExtensibleNode) -> bool,
+        unsafe extern "C-unwind" fn(a: *const ExtensibleNode, b: *const ExtensibleNode) -> bool,
     >,
     pub nodeOut: ::core::option::Option<
-        unsafe extern "C" fn(str_: *mut StringInfoData, node: *const ExtensibleNode),
+        unsafe extern "C-unwind" fn(str_: *mut StringInfoData, node: *const ExtensibleNode),
     >,
-    pub nodeRead: ::core::option::Option<unsafe extern "C" fn(node: *mut ExtensibleNode)>,
+    pub nodeRead: ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut ExtensibleNode)>,
 }
 impl Default for ExtensibleNodeMethods {
     fn default() -> Self {
@@ -31172,7 +28204,7 @@ impl Default for ExtensibleNodeMethods {
 pub struct CustomPathMethods {
     pub CustomName: *const ::core::ffi::c_char,
     pub PlanCustomPath: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             root: *mut PlannerInfo,
             rel: *mut RelOptInfo,
             best_path: *mut CustomPath,
@@ -31182,7 +28214,7 @@ pub struct CustomPathMethods {
         ) -> *mut Plan,
     >,
     pub ReparameterizeCustomPathByChild: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             root: *mut PlannerInfo,
             custom_private: *mut List,
             child_rel: *mut RelOptInfo,
@@ -31203,7 +28235,7 @@ impl Default for CustomPathMethods {
 pub struct CustomScanMethods {
     pub CustomName: *const ::core::ffi::c_char,
     pub CreateCustomScanState:
-        ::core::option::Option<unsafe extern "C" fn(cscan: *mut CustomScan) -> *mut Node>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(cscan: *mut CustomScan) -> *mut Node>,
 }
 impl Default for CustomScanMethods {
     fn default() -> Self {
@@ -31219,48 +28251,51 @@ impl Default for CustomScanMethods {
 pub struct CustomExecMethods {
     pub CustomName: *const ::core::ffi::c_char,
     pub BeginCustomScan: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             node: *mut CustomScanState,
             estate: *mut EState,
             eflags: ::core::ffi::c_int,
         ),
     >,
     pub ExecCustomScan: ::core::option::Option<
-        unsafe extern "C" fn(node: *mut CustomScanState) -> *mut TupleTableSlot,
+        unsafe extern "C-unwind" fn(node: *mut CustomScanState) -> *mut TupleTableSlot,
     >,
-    pub EndCustomScan: ::core::option::Option<unsafe extern "C" fn(node: *mut CustomScanState)>,
-    pub ReScanCustomScan: ::core::option::Option<unsafe extern "C" fn(node: *mut CustomScanState)>,
-    pub MarkPosCustomScan: ::core::option::Option<unsafe extern "C" fn(node: *mut CustomScanState)>,
+    pub EndCustomScan:
+        ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut CustomScanState)>,
+    pub ReScanCustomScan:
+        ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut CustomScanState)>,
+    pub MarkPosCustomScan:
+        ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut CustomScanState)>,
     pub RestrPosCustomScan:
-        ::core::option::Option<unsafe extern "C" fn(node: *mut CustomScanState)>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut CustomScanState)>,
     pub EstimateDSMCustomScan: ::core::option::Option<
-        unsafe extern "C" fn(node: *mut CustomScanState, pcxt: *mut ParallelContext) -> Size,
+        unsafe extern "C-unwind" fn(node: *mut CustomScanState, pcxt: *mut ParallelContext) -> Size,
     >,
     pub InitializeDSMCustomScan: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             node: *mut CustomScanState,
             pcxt: *mut ParallelContext,
             coordinate: *mut ::core::ffi::c_void,
         ),
     >,
     pub ReInitializeDSMCustomScan: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             node: *mut CustomScanState,
             pcxt: *mut ParallelContext,
             coordinate: *mut ::core::ffi::c_void,
         ),
     >,
     pub InitializeWorkerCustomScan: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             node: *mut CustomScanState,
             toc: *mut shm_toc,
             coordinate: *mut ::core::ffi::c_void,
         ),
     >,
     pub ShutdownCustomScan:
-        ::core::option::Option<unsafe extern "C" fn(node: *mut CustomScanState)>,
+        ::core::option::Option<unsafe extern "C-unwind" fn(node: *mut CustomScanState)>,
     pub ExplainCustomScan: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             node: *mut CustomScanState,
             ancestors: *mut List,
             es: *mut ExplainState,
@@ -31277,16 +28312,19 @@ impl Default for CustomExecMethods {
     }
 }
 pub type check_function_callback = ::core::option::Option<
-    unsafe extern "C" fn(func_id: Oid, context: *mut ::core::ffi::c_void) -> bool,
+    unsafe extern "C-unwind" fn(func_id: Oid, context: *mut ::core::ffi::c_void) -> bool,
 >;
 pub type tree_walker_callback = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut Node, context: *mut ::core::ffi::c_void) -> bool,
+    unsafe extern "C-unwind" fn(node: *mut Node, context: *mut ::core::ffi::c_void) -> bool,
 >;
 pub type planstate_tree_walker_callback = ::core::option::Option<
-    unsafe extern "C" fn(planstate: *mut PlanState, context: *mut ::core::ffi::c_void) -> bool,
+    unsafe extern "C-unwind" fn(
+        planstate: *mut PlanState,
+        context: *mut ::core::ffi::c_void,
+    ) -> bool,
 >;
 pub type tree_mutator_callback = ::core::option::Option<
-    unsafe extern "C" fn(node: *mut Node, context: *mut ::core::ffi::c_void) -> *mut Node,
+    unsafe extern "C-unwind" fn(node: *mut Node, context: *mut ::core::ffi::c_void) -> *mut Node,
 >;
 pub mod ReplicationKind {
     pub type Type = ::core::ffi::c_uint;
@@ -31437,7 +28475,7 @@ impl Default for UploadManifestCmd {
     }
 }
 pub type SubscriptTransform = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         sbsref: *mut SubscriptingRef,
         indirection: *mut List,
         pstate: *mut ParseState,
@@ -31446,7 +28484,7 @@ pub type SubscriptTransform = ::core::option::Option<
     ),
 >;
 pub type SubscriptExecSetup = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         sbsref: *const SubscriptingRef,
         sbsrefstate: *mut SubscriptingRefState,
         methods: *mut SubscriptExecSteps,
@@ -31623,7 +28661,7 @@ pub mod DebugParallelMode {
     pub const DEBUG_PARALLEL_REGRESS: Type = 2;
 }
 pub type set_rel_pathlist_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         rel: *mut RelOptInfo,
         rti: Index,
@@ -31631,7 +28669,7 @@ pub type set_rel_pathlist_hook_type = ::core::option::Option<
     ),
 >;
 pub type set_join_pathlist_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         joinrel: *mut RelOptInfo,
         outerrel: *mut RelOptInfo,
@@ -31641,14 +28679,14 @@ pub type set_join_pathlist_hook_type = ::core::option::Option<
     ),
 >;
 pub type join_search_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         levels_needed: ::core::ffi::c_int,
         initial_rels: *mut List,
     ) -> *mut RelOptInfo,
 >;
 pub type ec_matches_callback_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         rel: *mut RelOptInfo,
         ec: *mut EquivalenceClass,
@@ -31664,7 +28702,7 @@ pub mod PathKeysComparison {
     pub const PATHKEYS_DIFFERENT: Type = 3;
 }
 pub type get_relation_info_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         relationObjectId: Oid,
         inhparent: bool,
@@ -31672,10 +28710,10 @@ pub type get_relation_info_hook_type = ::core::option::Option<
     ),
 >;
 pub type query_pathkeys_callback = ::core::option::Option<
-    unsafe extern "C" fn(root: *mut PlannerInfo, extra: *mut ::core::ffi::c_void),
+    unsafe extern "C-unwind" fn(root: *mut PlannerInfo, extra: *mut ::core::ffi::c_void),
 >;
 pub type planner_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         parse: *mut Query,
         query_string: *const ::core::ffi::c_char,
         cursorOptions: ::core::ffi::c_int,
@@ -31683,7 +28721,7 @@ pub type planner_hook_type = ::core::option::Option<
     ) -> *mut PlannedStmt,
 >;
 pub type create_upper_paths_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         stage: UpperRelationKind::Type,
         input_rel: *mut RelOptInfo,
@@ -31724,7 +28762,11 @@ pub mod ComputeQueryIdType {
     pub const COMPUTE_QUERY_ID_REGRESS: Type = 3;
 }
 pub type post_parse_analyze_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(pstate: *mut ParseState, query: *mut Query, jstate: *mut JumbleState),
+    unsafe extern "C-unwind" fn(
+        pstate: *mut ParseState,
+        query: *mut Query,
+        jstate: *mut JumbleState,
+    ),
 >;
 pub mod FuncDetailCode {
     pub type Type = ::core::ffi::c_uint;
@@ -31746,6 +28788,73 @@ pub mod CoercionPathType {
     pub const COERCION_PATH_RELABELTYPE: Type = 2;
     pub const COERCION_PATH_ARRAYCOERCE: Type = 3;
     pub const COERCION_PATH_COERCEVIAIO: Type = 4;
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct PartitionBoundInfoData {
+    pub strategy: PartitionStrategy::Type,
+    pub ndatums: ::core::ffi::c_int,
+    pub datums: *mut *mut Datum,
+    pub kind: *mut *mut PartitionRangeDatumKind::Type,
+    pub interleaved_parts: *mut Bitmapset,
+    pub nindexes: ::core::ffi::c_int,
+    pub indexes: *mut ::core::ffi::c_int,
+    pub null_index: ::core::ffi::c_int,
+    pub default_index: ::core::ffi::c_int,
+}
+impl Default for PartitionBoundInfoData {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct PartitionDescData {
+    pub nparts: ::core::ffi::c_int,
+    pub detached_exist: bool,
+    pub oids: *mut Oid,
+    pub is_leaf: *mut bool,
+    pub boundinfo: PartitionBoundInfo,
+    pub last_found_datum_index: ::core::ffi::c_int,
+    pub last_found_part_index: ::core::ffi::c_int,
+    pub last_found_count: ::core::ffi::c_int,
+}
+impl Default for PartitionDescData {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct PartitionPruneContext {
+    pub strategy: ::core::ffi::c_char,
+    pub partnatts: ::core::ffi::c_int,
+    pub nparts: ::core::ffi::c_int,
+    pub boundinfo: PartitionBoundInfo,
+    pub partcollation: *mut Oid,
+    pub partsupfunc: *mut FmgrInfo,
+    pub stepcmpfuncs: *mut FmgrInfo,
+    pub ppccontext: MemoryContext,
+    pub planstate: *mut PlanState,
+    pub exprcontext: *mut ExprContext,
+    pub exprstates: *mut *mut ExprState,
+}
+impl Default for PartitionPruneContext {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -31870,7 +28979,7 @@ pub mod PLpgSQL_stmt_type {
     pub const PLPGSQL_STMT_COMMIT: Type = 25;
     pub const PLPGSQL_STMT_ROLLBACK: Type = 26;
 }
-pub mod _bindgen_ty_22 {
+pub mod _bindgen_ty_25 {
     pub type Type = ::core::ffi::c_uint;
     pub const PLPGSQL_RC_OK: Type = 0;
     pub const PLPGSQL_RC_EXIT: Type = 1;
@@ -32915,30 +30024,31 @@ impl Default for PLpgSQL_execstate {
 #[derive(Debug, Default, Copy, Clone)]
 pub struct PLpgSQL_plugin {
     pub func_setup: ::core::option::Option<
-        unsafe extern "C" fn(estate: *mut PLpgSQL_execstate, func: *mut PLpgSQL_function),
+        unsafe extern "C-unwind" fn(estate: *mut PLpgSQL_execstate, func: *mut PLpgSQL_function),
     >,
     pub func_beg: ::core::option::Option<
-        unsafe extern "C" fn(estate: *mut PLpgSQL_execstate, func: *mut PLpgSQL_function),
+        unsafe extern "C-unwind" fn(estate: *mut PLpgSQL_execstate, func: *mut PLpgSQL_function),
     >,
     pub func_end: ::core::option::Option<
-        unsafe extern "C" fn(estate: *mut PLpgSQL_execstate, func: *mut PLpgSQL_function),
+        unsafe extern "C-unwind" fn(estate: *mut PLpgSQL_execstate, func: *mut PLpgSQL_function),
     >,
     pub stmt_beg: ::core::option::Option<
-        unsafe extern "C" fn(estate: *mut PLpgSQL_execstate, stmt: *mut PLpgSQL_stmt),
+        unsafe extern "C-unwind" fn(estate: *mut PLpgSQL_execstate, stmt: *mut PLpgSQL_stmt),
     >,
     pub stmt_end: ::core::option::Option<
-        unsafe extern "C" fn(estate: *mut PLpgSQL_execstate, stmt: *mut PLpgSQL_stmt),
+        unsafe extern "C-unwind" fn(estate: *mut PLpgSQL_execstate, stmt: *mut PLpgSQL_stmt),
     >,
-    pub error_callback: ::core::option::Option<unsafe extern "C" fn(arg: *mut ::core::ffi::c_void)>,
+    pub error_callback:
+        ::core::option::Option<unsafe extern "C-unwind" fn(arg: *mut ::core::ffi::c_void)>,
     pub assign_expr: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             estate: *mut PLpgSQL_execstate,
             target: *mut PLpgSQL_datum,
             expr: *mut PLpgSQL_expr,
         ),
     >,
     pub assign_value: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             estate: *mut PLpgSQL_execstate,
             target: *mut PLpgSQL_datum,
             value: Datum,
@@ -32948,7 +30058,7 @@ pub struct PLpgSQL_plugin {
         ),
     >,
     pub eval_datum: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             estate: *mut PLpgSQL_execstate,
             datum: *mut PLpgSQL_datum,
             typeId: *mut Oid,
@@ -32958,7 +30068,7 @@ pub struct PLpgSQL_plugin {
         ),
     >,
     pub cast_value: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             estate: *mut PLpgSQL_execstate,
             value: Datum,
             isnull: *mut bool,
@@ -33257,7 +30367,7 @@ impl Default for ReorderBufferTXN {
     }
 }
 pub type ReorderBufferApplyChangeCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         relation: Relation,
@@ -33265,7 +30375,7 @@ pub type ReorderBufferApplyChangeCB = ::core::option::Option<
     ),
 >;
 pub type ReorderBufferApplyTruncateCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         nrelations: ::core::ffi::c_int,
@@ -33274,17 +30384,17 @@ pub type ReorderBufferApplyTruncateCB = ::core::option::Option<
     ),
 >;
 pub type ReorderBufferBeginCB = ::core::option::Option<
-    unsafe extern "C" fn(rb: *mut ReorderBuffer, txn: *mut ReorderBufferTXN),
+    unsafe extern "C-unwind" fn(rb: *mut ReorderBuffer, txn: *mut ReorderBufferTXN),
 >;
 pub type ReorderBufferCommitCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         commit_lsn: XLogRecPtr,
     ),
 >;
 pub type ReorderBufferMessageCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         message_lsn: XLogRecPtr,
@@ -33295,24 +30405,24 @@ pub type ReorderBufferMessageCB = ::core::option::Option<
     ),
 >;
 pub type ReorderBufferBeginPrepareCB = ::core::option::Option<
-    unsafe extern "C" fn(rb: *mut ReorderBuffer, txn: *mut ReorderBufferTXN),
+    unsafe extern "C-unwind" fn(rb: *mut ReorderBuffer, txn: *mut ReorderBufferTXN),
 >;
 pub type ReorderBufferPrepareCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         prepare_lsn: XLogRecPtr,
     ),
 >;
 pub type ReorderBufferCommitPreparedCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         commit_lsn: XLogRecPtr,
     ),
 >;
 pub type ReorderBufferRollbackPreparedCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         prepare_end_lsn: XLogRecPtr,
@@ -33320,30 +30430,42 @@ pub type ReorderBufferRollbackPreparedCB = ::core::option::Option<
     ),
 >;
 pub type ReorderBufferStreamStartCB = ::core::option::Option<
-    unsafe extern "C" fn(rb: *mut ReorderBuffer, txn: *mut ReorderBufferTXN, first_lsn: XLogRecPtr),
+    unsafe extern "C-unwind" fn(
+        rb: *mut ReorderBuffer,
+        txn: *mut ReorderBufferTXN,
+        first_lsn: XLogRecPtr,
+    ),
 >;
 pub type ReorderBufferStreamStopCB = ::core::option::Option<
-    unsafe extern "C" fn(rb: *mut ReorderBuffer, txn: *mut ReorderBufferTXN, last_lsn: XLogRecPtr),
+    unsafe extern "C-unwind" fn(
+        rb: *mut ReorderBuffer,
+        txn: *mut ReorderBufferTXN,
+        last_lsn: XLogRecPtr,
+    ),
 >;
 pub type ReorderBufferStreamAbortCB = ::core::option::Option<
-    unsafe extern "C" fn(rb: *mut ReorderBuffer, txn: *mut ReorderBufferTXN, abort_lsn: XLogRecPtr),
+    unsafe extern "C-unwind" fn(
+        rb: *mut ReorderBuffer,
+        txn: *mut ReorderBufferTXN,
+        abort_lsn: XLogRecPtr,
+    ),
 >;
 pub type ReorderBufferStreamPrepareCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         prepare_lsn: XLogRecPtr,
     ),
 >;
 pub type ReorderBufferStreamCommitCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         commit_lsn: XLogRecPtr,
     ),
 >;
 pub type ReorderBufferStreamChangeCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         relation: Relation,
@@ -33351,7 +30473,7 @@ pub type ReorderBufferStreamChangeCB = ::core::option::Option<
     ),
 >;
 pub type ReorderBufferStreamMessageCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         message_lsn: XLogRecPtr,
@@ -33362,7 +30484,7 @@ pub type ReorderBufferStreamMessageCB = ::core::option::Option<
     ),
 >;
 pub type ReorderBufferStreamTruncateCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         rb: *mut ReorderBuffer,
         txn: *mut ReorderBufferTXN,
         nrelations: ::core::ffi::c_int,
@@ -33371,7 +30493,11 @@ pub type ReorderBufferStreamTruncateCB = ::core::option::Option<
     ),
 >;
 pub type ReorderBufferUpdateProgressTxnCB = ::core::option::Option<
-    unsafe extern "C" fn(rb: *mut ReorderBuffer, txn: *mut ReorderBufferTXN, lsn: XLogRecPtr),
+    unsafe extern "C-unwind" fn(
+        rb: *mut ReorderBuffer,
+        txn: *mut ReorderBufferTXN,
+        lsn: XLogRecPtr,
+    ),
 >;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -33450,19 +30576,19 @@ impl Default for OutputPluginOptions {
     }
 }
 pub type LogicalOutputPluginInit =
-    ::core::option::Option<unsafe extern "C" fn(cb: *mut OutputPluginCallbacks)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(cb: *mut OutputPluginCallbacks)>;
 pub type LogicalDecodeStartupCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         options: *mut OutputPluginOptions,
         is_init: bool,
     ),
 >;
 pub type LogicalDecodeBeginCB = ::core::option::Option<
-    unsafe extern "C" fn(ctx: *mut LogicalDecodingContext, txn: *mut ReorderBufferTXN),
+    unsafe extern "C-unwind" fn(ctx: *mut LogicalDecodingContext, txn: *mut ReorderBufferTXN),
 >;
 pub type LogicalDecodeChangeCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         relation: Relation,
@@ -33470,7 +30596,7 @@ pub type LogicalDecodeChangeCB = ::core::option::Option<
     ),
 >;
 pub type LogicalDecodeTruncateCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         nrelations: ::core::ffi::c_int,
@@ -33479,14 +30605,14 @@ pub type LogicalDecodeTruncateCB = ::core::option::Option<
     ),
 >;
 pub type LogicalDecodeCommitCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         commit_lsn: XLogRecPtr,
     ),
 >;
 pub type LogicalDecodeMessageCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         message_lsn: XLogRecPtr,
@@ -33497,36 +30623,36 @@ pub type LogicalDecodeMessageCB = ::core::option::Option<
     ),
 >;
 pub type LogicalDecodeFilterByOriginCB = ::core::option::Option<
-    unsafe extern "C" fn(ctx: *mut LogicalDecodingContext, origin_id: RepOriginId) -> bool,
+    unsafe extern "C-unwind" fn(ctx: *mut LogicalDecodingContext, origin_id: RepOriginId) -> bool,
 >;
 pub type LogicalDecodeShutdownCB =
-    ::core::option::Option<unsafe extern "C" fn(ctx: *mut LogicalDecodingContext)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(ctx: *mut LogicalDecodingContext)>;
 pub type LogicalDecodeFilterPrepareCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         xid: TransactionId,
         gid: *const ::core::ffi::c_char,
     ) -> bool,
 >;
 pub type LogicalDecodeBeginPrepareCB = ::core::option::Option<
-    unsafe extern "C" fn(ctx: *mut LogicalDecodingContext, txn: *mut ReorderBufferTXN),
+    unsafe extern "C-unwind" fn(ctx: *mut LogicalDecodingContext, txn: *mut ReorderBufferTXN),
 >;
 pub type LogicalDecodePrepareCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         prepare_lsn: XLogRecPtr,
     ),
 >;
 pub type LogicalDecodeCommitPreparedCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         commit_lsn: XLogRecPtr,
     ),
 >;
 pub type LogicalDecodeRollbackPreparedCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         prepare_end_lsn: XLogRecPtr,
@@ -33534,34 +30660,34 @@ pub type LogicalDecodeRollbackPreparedCB = ::core::option::Option<
     ),
 >;
 pub type LogicalDecodeStreamStartCB = ::core::option::Option<
-    unsafe extern "C" fn(ctx: *mut LogicalDecodingContext, txn: *mut ReorderBufferTXN),
+    unsafe extern "C-unwind" fn(ctx: *mut LogicalDecodingContext, txn: *mut ReorderBufferTXN),
 >;
 pub type LogicalDecodeStreamStopCB = ::core::option::Option<
-    unsafe extern "C" fn(ctx: *mut LogicalDecodingContext, txn: *mut ReorderBufferTXN),
+    unsafe extern "C-unwind" fn(ctx: *mut LogicalDecodingContext, txn: *mut ReorderBufferTXN),
 >;
 pub type LogicalDecodeStreamAbortCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         abort_lsn: XLogRecPtr,
     ),
 >;
 pub type LogicalDecodeStreamPrepareCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         prepare_lsn: XLogRecPtr,
     ),
 >;
 pub type LogicalDecodeStreamCommitCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         commit_lsn: XLogRecPtr,
     ),
 >;
 pub type LogicalDecodeStreamChangeCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         relation: Relation,
@@ -33569,7 +30695,7 @@ pub type LogicalDecodeStreamChangeCB = ::core::option::Option<
     ),
 >;
 pub type LogicalDecodeStreamMessageCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         message_lsn: XLogRecPtr,
@@ -33580,7 +30706,7 @@ pub type LogicalDecodeStreamMessageCB = ::core::option::Option<
     ),
 >;
 pub type LogicalDecodeStreamTruncateCB = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         ctx: *mut LogicalDecodingContext,
         txn: *mut ReorderBufferTXN,
         nrelations: ::core::ffi::c_int,
@@ -33691,11 +30817,20 @@ impl Default for LogicalRepTyp {
     }
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct LogicalRepBeginData {
     pub final_lsn: XLogRecPtr,
     pub committime: TimestampTz,
     pub xid: TransactionId,
+}
+impl Default for LogicalRepBeginData {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -33760,12 +30895,21 @@ impl Default for LogicalRepRollbackPreparedTxnData {
     }
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct LogicalRepStreamAbortData {
     pub xid: TransactionId,
     pub subxid: TransactionId,
     pub abort_lsn: XLogRecPtr,
     pub abort_time: TimestampTz,
+}
+impl Default for LogicalRepStreamAbortData {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 pub mod CRSSnapshotAction {
     pub type Type = ::core::ffi::c_uint;
@@ -33907,7 +31051,7 @@ impl Default for WalRcvExecResult {
     }
 }
 pub type walrcv_connect_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conninfo: *const ::core::ffi::c_char,
         replication: bool,
         logical: bool,
@@ -33917,31 +31061,32 @@ pub type walrcv_connect_fn = ::core::option::Option<
     ) -> *mut WalReceiverConn,
 >;
 pub type walrcv_check_conninfo_fn = ::core::option::Option<
-    unsafe extern "C" fn(conninfo: *const ::core::ffi::c_char, must_use_password: bool),
+    unsafe extern "C-unwind" fn(conninfo: *const ::core::ffi::c_char, must_use_password: bool),
 >;
 pub type walrcv_get_conninfo_fn = ::core::option::Option<
-    unsafe extern "C" fn(conn: *mut WalReceiverConn) -> *mut ::core::ffi::c_char,
+    unsafe extern "C-unwind" fn(conn: *mut WalReceiverConn) -> *mut ::core::ffi::c_char,
 >;
 pub type walrcv_get_senderinfo_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conn: *mut WalReceiverConn,
         sender_host: *mut *mut ::core::ffi::c_char,
         sender_port: *mut ::core::ffi::c_int,
     ),
 >;
 pub type walrcv_identify_system_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conn: *mut WalReceiverConn,
         primary_tli: *mut TimeLineID,
     ) -> *mut ::core::ffi::c_char,
 >;
 pub type walrcv_get_dbname_from_conninfo_fn = ::core::option::Option<
-    unsafe extern "C" fn(conninfo: *const ::core::ffi::c_char) -> *mut ::core::ffi::c_char,
+    unsafe extern "C-unwind" fn(conninfo: *const ::core::ffi::c_char) -> *mut ::core::ffi::c_char,
 >;
-pub type walrcv_server_version_fn =
-    ::core::option::Option<unsafe extern "C" fn(conn: *mut WalReceiverConn) -> ::core::ffi::c_int>;
+pub type walrcv_server_version_fn = ::core::option::Option<
+    unsafe extern "C-unwind" fn(conn: *mut WalReceiverConn) -> ::core::ffi::c_int,
+>;
 pub type walrcv_readtimelinehistoryfile_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conn: *mut WalReceiverConn,
         tli: TimeLineID,
         filename: *mut *mut ::core::ffi::c_char,
@@ -33950,27 +31095,30 @@ pub type walrcv_readtimelinehistoryfile_fn = ::core::option::Option<
     ),
 >;
 pub type walrcv_startstreaming_fn = ::core::option::Option<
-    unsafe extern "C" fn(conn: *mut WalReceiverConn, options: *const WalRcvStreamOptions) -> bool,
+    unsafe extern "C-unwind" fn(
+        conn: *mut WalReceiverConn,
+        options: *const WalRcvStreamOptions,
+    ) -> bool,
 >;
 pub type walrcv_endstreaming_fn = ::core::option::Option<
-    unsafe extern "C" fn(conn: *mut WalReceiverConn, next_tli: *mut TimeLineID),
+    unsafe extern "C-unwind" fn(conn: *mut WalReceiverConn, next_tli: *mut TimeLineID),
 >;
 pub type walrcv_receive_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conn: *mut WalReceiverConn,
         buffer: *mut *mut ::core::ffi::c_char,
         wait_fd: *mut pgsocket,
     ) -> ::core::ffi::c_int,
 >;
 pub type walrcv_send_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conn: *mut WalReceiverConn,
         buffer: *const ::core::ffi::c_char,
         nbytes: ::core::ffi::c_int,
     ),
 >;
 pub type walrcv_create_slot_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conn: *mut WalReceiverConn,
         slotname: *const ::core::ffi::c_char,
         temporary: bool,
@@ -33981,16 +31129,16 @@ pub type walrcv_create_slot_fn = ::core::option::Option<
     ) -> *mut ::core::ffi::c_char,
 >;
 pub type walrcv_alter_slot_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conn: *mut WalReceiverConn,
         slotname: *const ::core::ffi::c_char,
         failover: bool,
     ),
 >;
 pub type walrcv_get_backend_pid_fn =
-    ::core::option::Option<unsafe extern "C" fn(conn: *mut WalReceiverConn) -> pid_t>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(conn: *mut WalReceiverConn) -> pid_t>;
 pub type walrcv_exec_fn = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         conn: *mut WalReceiverConn,
         query: *const ::core::ffi::c_char,
         nRetTypes: ::core::ffi::c_int,
@@ -33998,7 +31146,7 @@ pub type walrcv_exec_fn = ::core::option::Option<
     ) -> *mut WalRcvExecResult,
 >;
 pub type walrcv_disconnect_fn =
-    ::core::option::Option<unsafe extern "C" fn(conn: *mut WalReceiverConn)>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(conn: *mut WalReceiverConn)>;
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct WalReceiverFunctionsType {
@@ -34103,7 +31251,7 @@ impl Default for ReplicationSlotCtlData {
     }
 }
 pub type LogicalOutputPluginWriterWrite = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         lr: *mut LogicalDecodingContext,
         Ptr: XLogRecPtr,
         xid: TransactionId,
@@ -34112,7 +31260,7 @@ pub type LogicalOutputPluginWriterWrite = ::core::option::Option<
 >;
 pub type LogicalOutputPluginWriterPrepareWrite = LogicalOutputPluginWriterWrite;
 pub type LogicalOutputPluginWriterUpdateProgress = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         lr: *mut LogicalDecodingContext,
         Ptr: XLogRecPtr,
         xid: TransactionId,
@@ -34192,16 +31340,210 @@ impl Default for RowSecurityDesc {
     }
 }
 pub type row_security_policy_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(cmdtype: CmdType::Type, relation: Relation) -> *mut List,
+    unsafe extern "C-unwind" fn(cmdtype: CmdType::Type, relation: Relation) -> *mut List,
 >;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct MVNDistinctItem {
+    pub ndistinct: f64,
+    pub nattributes: ::core::ffi::c_int,
+    pub attributes: *mut AttrNumber,
+}
+impl Default for MVNDistinctItem {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct MVNDistinct {
+    pub magic: uint32,
+    pub type_: uint32,
+    pub nitems: uint32,
+    pub items: __IncompleteArrayField<MVNDistinctItem>,
+}
+impl Default for MVNDistinct {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct MVDependency {
+    pub degree: f64,
+    pub nattributes: AttrNumber,
+    pub attributes: __IncompleteArrayField<AttrNumber>,
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct MVDependencies {
+    pub magic: uint32,
+    pub type_: uint32,
+    pub ndeps: uint32,
+    pub deps: __IncompleteArrayField<*mut MVDependency>,
+}
+impl Default for MVDependencies {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct MCVItem {
+    pub frequency: f64,
+    pub base_frequency: f64,
+    pub isnull: *mut bool,
+    pub values: *mut Datum,
+}
+impl Default for MCVItem {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct MCVList {
+    pub magic: uint32,
+    pub type_: uint32,
+    pub nitems: uint32,
+    pub ndimensions: AttrNumber,
+    pub types: [Oid; 8usize],
+    pub items: __IncompleteArrayField<MCVItem>,
+}
+impl Default for MCVList {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct buftag {
+    pub spcOid: Oid,
+    pub dbOid: Oid,
+    pub relNumber: RelFileNumber,
+    pub forkNum: ForkNumber::Type,
+    pub blockNum: BlockNumber,
+}
+impl Default for buftag {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type BufferTag = buftag;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct BufferDesc {
+    pub tag: BufferTag,
+    pub buf_id: ::core::ffi::c_int,
+    pub state: pg_atomic_uint32,
+    pub wait_backend_pgprocno: ::core::ffi::c_int,
+    pub freeNext: ::core::ffi::c_int,
+    pub content_lock: LWLock,
+}
+impl Default for BufferDesc {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union BufferDescPadded {
+    pub bufferdesc: BufferDesc,
+    pub pad: [::core::ffi::c_char; 64usize],
+}
+impl Default for BufferDescPadded {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct PendingWriteback {
+    pub tag: BufferTag,
+}
+impl Default for PendingWriteback {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct WritebackContext {
+    pub max_pending: *mut ::core::ffi::c_int,
+    pub nr_pending: ::core::ffi::c_int,
+    pub pending_writebacks: [PendingWriteback; 256usize],
+}
+impl Default for WritebackContext {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct CkptSortItem {
+    pub tsId: Oid,
+    pub relNumber: RelFileNumber,
+    pub forkNum: ForkNumber::Type,
+    pub blockNum: BlockNumber,
+    pub buf_id: ::core::ffi::c_int,
+}
+impl Default for CkptSortItem {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct BufFile {
     _unused: [u8; 0],
 }
 pub type pg_on_exit_callback =
-    ::core::option::Option<unsafe extern "C" fn(code: ::core::ffi::c_int, arg: Datum)>;
-pub type shmem_startup_hook_type = ::core::option::Option<unsafe extern "C" fn()>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(code: ::core::ffi::c_int, arg: Datum)>;
+pub type shmem_startup_hook_type = ::core::option::Option<unsafe extern "C-unwind" fn()>;
 pub mod XLTW_Oper {
     pub type Type = ::core::ffi::c_uint;
     pub const XLTW_None: Type = 0;
@@ -34254,7 +31596,7 @@ impl Default for xl_standby_locks {
     }
 }
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct xl_running_xacts {
     pub xcnt: ::core::ffi::c_int,
     pub subxcnt: ::core::ffi::c_int,
@@ -34263,6 +31605,15 @@ pub struct xl_running_xacts {
     pub oldestRunningXid: TransactionId,
     pub latestCompletedXid: TransactionId,
     pub xids: __IncompleteArrayField<TransactionId>,
+}
+impl Default for xl_running_xacts {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
 }
 #[repr(C)]
 pub struct xl_invalidations {
@@ -34342,7 +31693,7 @@ impl Default for AlterTableUtilityContext {
     }
 }
 pub type ProcessUtility_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         pstmt: *mut PlannedStmt,
         queryString: *const ::core::ffi::c_char,
         readOnlyTree: bool,
@@ -34353,6 +31704,97 @@ pub type ProcessUtility_hook_type = ::core::option::Option<
         qc: *mut QueryCompletion,
     ),
 >;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TSAnyCacheEntry {
+    pub objId: Oid,
+    pub isvalid: bool,
+}
+impl Default for TSAnyCacheEntry {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TSParserCacheEntry {
+    pub prsId: Oid,
+    pub isvalid: bool,
+    pub startOid: Oid,
+    pub tokenOid: Oid,
+    pub endOid: Oid,
+    pub headlineOid: Oid,
+    pub lextypeOid: Oid,
+    pub prsstart: FmgrInfo,
+    pub prstoken: FmgrInfo,
+    pub prsend: FmgrInfo,
+    pub prsheadline: FmgrInfo,
+}
+impl Default for TSParserCacheEntry {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TSDictionaryCacheEntry {
+    pub dictId: Oid,
+    pub isvalid: bool,
+    pub lexizeOid: Oid,
+    pub lexize: FmgrInfo,
+    pub dictCtx: MemoryContext,
+    pub dictData: *mut ::core::ffi::c_void,
+}
+impl Default for TSDictionaryCacheEntry {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ListDictionary {
+    pub len: ::core::ffi::c_int,
+    pub dictIds: *mut Oid,
+}
+impl Default for ListDictionary {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TSConfigCacheEntry {
+    pub cfgId: Oid,
+    pub isvalid: bool,
+    pub prsId: Oid,
+    pub lenmap: ::core::ffi::c_int,
+    pub map: *mut ListDictionary,
+}
+impl Default for TSConfigCacheEntry {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct WordEntry {
@@ -34372,6 +31814,28 @@ impl WordEntry {
         }
     }
     #[inline]
+    pub unsafe fn haspos_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                0usize,
+                1u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_haspos_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                0usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn len(&self) -> uint32 {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(1usize, 11u8) as u32) }
     }
@@ -34383,6 +31847,28 @@ impl WordEntry {
         }
     }
     #[inline]
+    pub unsafe fn len_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                1usize,
+                11u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_len_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                1usize,
+                11u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn pos(&self) -> uint32 {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(12usize, 20u8) as u32) }
     }
@@ -34391,6 +31877,28 @@ impl WordEntry {
         unsafe {
             let val: u32 = ::core::mem::transmute(val);
             self._bitfield_1.set(12usize, 20u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn pos_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                12usize,
+                20u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_pos_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                12usize,
+                20u8,
+                val as u64,
+            )
         }
     }
     #[inline]
@@ -34460,6 +31968,28 @@ impl QueryOperand {
         }
     }
     #[inline]
+    pub unsafe fn length_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                0usize,
+                12u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_length_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                0usize,
+                12u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn distance(&self) -> uint32 {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(12usize, 20u8) as u32) }
     }
@@ -34468,6 +31998,28 @@ impl QueryOperand {
         unsafe {
             let val: u32 = ::core::mem::transmute(val);
             self._bitfield_1.set(12usize, 20u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn distance_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                12usize,
+                20u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_distance_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                12usize,
+                20u8,
+                val as u64,
+            )
         }
     }
     #[inline]
@@ -34563,6 +32115,28 @@ impl HeadlineWordEntry {
         }
     }
     #[inline]
+    pub unsafe fn selected_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                0usize,
+                1u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_selected_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                0usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn in_(&self) -> uint32 {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u32) }
     }
@@ -34571,6 +32145,28 @@ impl HeadlineWordEntry {
         unsafe {
             let val: u32 = ::core::mem::transmute(val);
             self._bitfield_1.set(1usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn in__raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                1usize,
+                1u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_in_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                1usize,
+                1u8,
+                val as u64,
+            )
         }
     }
     #[inline]
@@ -34585,6 +32181,28 @@ impl HeadlineWordEntry {
         }
     }
     #[inline]
+    pub unsafe fn replace_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                2usize,
+                1u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_replace_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                2usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn repeated(&self) -> uint32 {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(3usize, 1u8) as u32) }
     }
@@ -34593,6 +32211,28 @@ impl HeadlineWordEntry {
         unsafe {
             let val: u32 = ::core::mem::transmute(val);
             self._bitfield_1.set(3usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn repeated_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                3usize,
+                1u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_repeated_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                3usize,
+                1u8,
+                val as u64,
+            )
         }
     }
     #[inline]
@@ -34607,6 +32247,28 @@ impl HeadlineWordEntry {
         }
     }
     #[inline]
+    pub unsafe fn skip_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                4usize,
+                1u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_skip_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                4usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn unused(&self) -> uint32 {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(5usize, 3u8) as u32) }
     }
@@ -34615,6 +32277,28 @@ impl HeadlineWordEntry {
         unsafe {
             let val: u32 = ::core::mem::transmute(val);
             self._bitfield_1.set(5usize, 3u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn unused_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                5usize,
+                3u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_unused_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                5usize,
+                3u8,
+                val as u64,
+            )
         }
     }
     #[inline]
@@ -34629,6 +32313,28 @@ impl HeadlineWordEntry {
         }
     }
     #[inline]
+    pub unsafe fn type__raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                8usize,
+                8u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_type_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                8usize,
+                8u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
     pub fn len(&self) -> uint32 {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(16usize, 16u8) as u32) }
     }
@@ -34637,6 +32343,28 @@ impl HeadlineWordEntry {
         unsafe {
             let val: u32 = ::core::mem::transmute(val);
             self._bitfield_1.set(16usize, 16u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn len_raw(this: *const Self) -> uint32 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                16usize,
+                16u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_len_raw(this: *mut Self, val: uint32) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                16usize,
+                16u8,
+                val as u64,
+            )
         }
     }
     #[inline]
@@ -34769,7 +32497,7 @@ pub struct TSQueryParserStateData {
 }
 pub type TSQueryParserState = *mut TSQueryParserStateData;
 pub type PushFunction = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         opaque: Datum,
         state: TSQueryParserState,
         token: *mut ::core::ffi::c_char,
@@ -34854,7 +32582,7 @@ impl Default for ExecPhraseData {
     }
 }
 pub type TSExecuteCallback = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         arg: *mut ::core::ffi::c_void,
         val: *mut QueryOperand,
         data: *mut ExecPhraseData,
@@ -35256,7 +32984,7 @@ impl Default for AttStatsSlot {
     }
 }
 pub type get_attavgwidth_hook_type =
-    ::core::option::Option<unsafe extern "C" fn(relid: Oid, attnum: AttrNumber) -> int32>;
+    ::core::option::Option<unsafe extern "C-unwind" fn(relid: Oid, attnum: AttrNumber) -> int32>;
 pub mod CheckEnableRlsResult {
     pub type Type = ::core::ffi::c_uint;
     pub const RLS_NONE: Type = 0;
@@ -35291,7 +33019,7 @@ pub struct VariableStatData {
     pub var: *mut Node,
     pub rel: *mut RelOptInfo,
     pub statsTuple: HeapTuple,
-    pub freefunc: ::core::option::Option<unsafe extern "C" fn(tuple: HeapTuple)>,
+    pub freefunc: ::core::option::Option<unsafe extern "C-unwind" fn(tuple: HeapTuple)>,
     pub vartype: Oid,
     pub atttype: Oid,
     pub atttypmod: int32,
@@ -35320,7 +33048,7 @@ pub struct GenericCosts {
     pub num_sa_scans: f64,
 }
 pub type get_relation_stats_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         rte: *mut RangeTblEntry,
         attnum: AttrNumber,
@@ -35328,15 +33056,16 @@ pub type get_relation_stats_hook_type = ::core::option::Option<
     ) -> bool,
 >;
 pub type get_index_stats_hook_type = ::core::option::Option<
-    unsafe extern "C" fn(
+    unsafe extern "C-unwind" fn(
         root: *mut PlannerInfo,
         indexOid: Oid,
         indexattnum: AttrNumber,
         vardata: *mut VariableStatData,
     ) -> bool,
 >;
-pub type CCHashFN = ::core::option::Option<unsafe extern "C" fn(datum: Datum) -> uint32>;
-pub type CCFastEqualFN = ::core::option::Option<unsafe extern "C" fn(a: Datum, b: Datum) -> bool>;
+pub type CCHashFN = ::core::option::Option<unsafe extern "C-unwind" fn(datum: Datum) -> uint32>;
+pub type CCFastEqualFN =
+    ::core::option::Option<unsafe extern "C-unwind" fn(a: Datum, b: Datum) -> bool>;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct catcache {
@@ -35589,11 +33318,6 @@ impl Default for __va_list_tag {
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
-pub struct __locale_data {
-    pub _address: u8,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
 pub struct AttrMissing {
     pub _address: u8,
 }
@@ -35658,48 +33382,7 @@ pub struct SnapBuild {
     pub _address: u8,
 }
 #[pgrx_macros::pg_guard]
-extern "C" {
-    #[link_name = "\u{1}__isoc99_fscanf"]
-    pub fn fscanf1(
-        __stream: *mut FILE,
-        __format: *const ::core::ffi::c_char,
-        ...
-    ) -> ::core::ffi::c_int;
-    #[link_name = "\u{1}__isoc99_scanf"]
-    pub fn scanf1(__format: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
-    #[link_name = "\u{1}__isoc99_sscanf"]
-    pub fn sscanf1(
-        __s: *const ::core::ffi::c_char,
-        __format: *const ::core::ffi::c_char,
-        ...
-    ) -> ::core::ffi::c_int;
-    #[link_name = "\u{1}__isoc99_vfscanf"]
-    pub fn vfscanf1(
-        __s: *mut FILE,
-        __format: *const ::core::ffi::c_char,
-        __arg: *mut __va_list_tag,
-    ) -> ::core::ffi::c_int;
-    #[link_name = "\u{1}__isoc99_vscanf"]
-    pub fn vscanf1(
-        __format: *const ::core::ffi::c_char,
-        __arg: *mut __va_list_tag,
-    ) -> ::core::ffi::c_int;
-    #[link_name = "\u{1}__isoc99_vsscanf"]
-    pub fn vsscanf1(
-        __s: *const ::core::ffi::c_char,
-        __format: *const ::core::ffi::c_char,
-        __arg: *mut __va_list_tag,
-    ) -> ::core::ffi::c_int;
-    pub fn alloca(__size: ::core::ffi::c_ulong) -> *mut ::core::ffi::c_void;
-    pub fn atexit(__func: ::core::option::Option<unsafe extern "C" fn()>) -> ::core::ffi::c_int;
-    pub fn at_quick_exit(
-        __func: ::core::option::Option<unsafe extern "C" fn()>,
-    ) -> ::core::ffi::c_int;
-    pub fn __memcmpeq(
-        __s1: *const ::core::ffi::c_void,
-        __s2: *const ::core::ffi::c_void,
-        __n: usize,
-    ) -> ::core::ffi::c_int;
+unsafe extern "C-unwind" {
     pub fn ExceptionalCondition(
         conditionName: *const ::core::ffi::c_char,
         fileName: *const ::core::ffi::c_char,
@@ -35719,6 +33402,7 @@ extern "C" {
         tail: *const ::core::ffi::c_char,
     );
     pub fn canonicalize_path(path: *mut ::core::ffi::c_char);
+    pub fn canonicalize_path_enc(path: *mut ::core::ffi::c_char, encoding: ::core::ffi::c_int);
     pub fn make_native_path(filename: *mut ::core::ffi::c_char);
     pub fn cleanup_path(path: *mut ::core::ffi::c_char);
     pub fn path_contains_parent_reference(path: *const ::core::ffi::c_char) -> bool;
@@ -35807,21 +33491,41 @@ extern "C" {
     pub fn pg_tolower(ch: ::core::ffi::c_uchar) -> ::core::ffi::c_uchar;
     pub fn pg_ascii_toupper(ch: ::core::ffi::c_uchar) -> ::core::ffi::c_uchar;
     pub fn pg_ascii_tolower(ch: ::core::ffi::c_uchar) -> ::core::ffi::c_uchar;
+    pub fn pg_vsnprintf(
+        str_: *mut ::core::ffi::c_char,
+        count: usize,
+        fmt: *const ::core::ffi::c_char,
+        args: *mut __va_list_tag,
+    ) -> ::core::ffi::c_int;
     pub fn pg_snprintf(
         str_: *mut ::core::ffi::c_char,
         count: usize,
         fmt: *const ::core::ffi::c_char,
         ...
     ) -> ::core::ffi::c_int;
+    pub fn pg_vsprintf(
+        str_: *mut ::core::ffi::c_char,
+        fmt: *const ::core::ffi::c_char,
+        args: *mut __va_list_tag,
+    ) -> ::core::ffi::c_int;
     pub fn pg_sprintf(
         str_: *mut ::core::ffi::c_char,
         fmt: *const ::core::ffi::c_char,
         ...
     ) -> ::core::ffi::c_int;
+    pub fn pg_vfprintf(
+        stream: *mut FILE,
+        fmt: *const ::core::ffi::c_char,
+        args: *mut __va_list_tag,
+    ) -> ::core::ffi::c_int;
     pub fn pg_fprintf(
         stream: *mut FILE,
         fmt: *const ::core::ffi::c_char,
         ...
+    ) -> ::core::ffi::c_int;
+    pub fn pg_vprintf(
+        fmt: *const ::core::ffi::c_char,
+        args: *mut __va_list_tag,
     ) -> ::core::ffi::c_int;
     pub fn pg_printf(fmt: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
     pub fn pg_strfromd(
@@ -35844,210 +33548,6 @@ extern "C" {
         uid: *mut uid_t,
         gid: *mut gid_t,
     ) -> ::core::ffi::c_int;
-    pub fn __acos(__x: f64) -> f64;
-    pub fn __asin(__x: f64) -> f64;
-    pub fn __atan(__x: f64) -> f64;
-    pub fn __atan2(__y: f64, __x: f64) -> f64;
-    pub fn __cos(__x: f64) -> f64;
-    pub fn __sin(__x: f64) -> f64;
-    pub fn __tan(__x: f64) -> f64;
-    pub fn __cosh(__x: f64) -> f64;
-    pub fn __sinh(__x: f64) -> f64;
-    pub fn __tanh(__x: f64) -> f64;
-    pub fn __acosh(__x: f64) -> f64;
-    pub fn __asinh(__x: f64) -> f64;
-    pub fn __atanh(__x: f64) -> f64;
-    pub fn __exp(__x: f64) -> f64;
-    pub fn __frexp(__x: f64, __exponent: *mut ::core::ffi::c_int) -> f64;
-    pub fn __ldexp(__x: f64, __exponent: ::core::ffi::c_int) -> f64;
-    pub fn __log(__x: f64) -> f64;
-    pub fn __log10(__x: f64) -> f64;
-    pub fn __modf(__x: f64, __iptr: *mut f64) -> f64;
-    pub fn __expm1(__x: f64) -> f64;
-    pub fn __log1p(__x: f64) -> f64;
-    pub fn __logb(__x: f64) -> f64;
-    pub fn __exp2(__x: f64) -> f64;
-    pub fn __log2(__x: f64) -> f64;
-    pub fn __pow(__x: f64, __y: f64) -> f64;
-    pub fn __sqrt(__x: f64) -> f64;
-    pub fn __hypot(__x: f64, __y: f64) -> f64;
-    pub fn __cbrt(__x: f64) -> f64;
-    pub fn __ceil(__x: f64) -> f64;
-    pub fn __fabs(__x: f64) -> f64;
-    pub fn __floor(__x: f64) -> f64;
-    pub fn __fmod(__x: f64, __y: f64) -> f64;
-    pub fn __drem(__x: f64, __y: f64) -> f64;
-    pub fn __significand(__x: f64) -> f64;
-    pub fn __copysign(__x: f64, __y: f64) -> f64;
-    pub fn __nan(__tagb: *const ::core::ffi::c_char) -> f64;
-    pub fn __j0(arg1: f64) -> f64;
-    pub fn __j1(arg1: f64) -> f64;
-    pub fn __jn(arg1: ::core::ffi::c_int, arg2: f64) -> f64;
-    pub fn __y0(arg1: f64) -> f64;
-    pub fn __y1(arg1: f64) -> f64;
-    pub fn __yn(arg1: ::core::ffi::c_int, arg2: f64) -> f64;
-    pub fn __erf(arg1: f64) -> f64;
-    pub fn __erfc(arg1: f64) -> f64;
-    pub fn __lgamma(arg1: f64) -> f64;
-    pub fn __tgamma(arg1: f64) -> f64;
-    pub fn __gamma(arg1: f64) -> f64;
-    pub fn __lgamma_r(arg1: f64, __signgamp: *mut ::core::ffi::c_int) -> f64;
-    pub fn __rint(__x: f64) -> f64;
-    pub fn __nextafter(__x: f64, __y: f64) -> f64;
-    pub fn __nexttoward(__x: f64, __y: u128) -> f64;
-    pub fn __remainder(__x: f64, __y: f64) -> f64;
-    pub fn __scalbn(__x: f64, __n: ::core::ffi::c_int) -> f64;
-    pub fn __ilogb(__x: f64) -> ::core::ffi::c_int;
-    pub fn __scalbln(__x: f64, __n: ::core::ffi::c_long) -> f64;
-    pub fn __nearbyint(__x: f64) -> f64;
-    pub fn __round(__x: f64) -> f64;
-    pub fn __trunc(__x: f64) -> f64;
-    pub fn __remquo(__x: f64, __y: f64, __quo: *mut ::core::ffi::c_int) -> f64;
-    pub fn __lrint(__x: f64) -> ::core::ffi::c_long;
-    pub fn __llrint(__x: f64) -> ::core::ffi::c_longlong;
-    pub fn __lround(__x: f64) -> ::core::ffi::c_long;
-    pub fn __llround(__x: f64) -> ::core::ffi::c_longlong;
-    pub fn __fdim(__x: f64, __y: f64) -> f64;
-    pub fn __fmax(__x: f64, __y: f64) -> f64;
-    pub fn __fmin(__x: f64, __y: f64) -> f64;
-    pub fn __fma(__x: f64, __y: f64, __z: f64) -> f64;
-    pub fn __scalb(__x: f64, __n: f64) -> f64;
-    pub fn __acosf(__x: f32) -> f32;
-    pub fn __asinf(__x: f32) -> f32;
-    pub fn __atanf(__x: f32) -> f32;
-    pub fn __atan2f(__y: f32, __x: f32) -> f32;
-    pub fn __cosf(__x: f32) -> f32;
-    pub fn __sinf(__x: f32) -> f32;
-    pub fn __tanf(__x: f32) -> f32;
-    pub fn __coshf(__x: f32) -> f32;
-    pub fn __sinhf(__x: f32) -> f32;
-    pub fn __tanhf(__x: f32) -> f32;
-    pub fn __acoshf(__x: f32) -> f32;
-    pub fn __asinhf(__x: f32) -> f32;
-    pub fn __atanhf(__x: f32) -> f32;
-    pub fn __expf(__x: f32) -> f32;
-    pub fn __frexpf(__x: f32, __exponent: *mut ::core::ffi::c_int) -> f32;
-    pub fn __ldexpf(__x: f32, __exponent: ::core::ffi::c_int) -> f32;
-    pub fn __logf(__x: f32) -> f32;
-    pub fn __log10f(__x: f32) -> f32;
-    pub fn __modff(__x: f32, __iptr: *mut f32) -> f32;
-    pub fn __expm1f(__x: f32) -> f32;
-    pub fn __log1pf(__x: f32) -> f32;
-    pub fn __logbf(__x: f32) -> f32;
-    pub fn __exp2f(__x: f32) -> f32;
-    pub fn __log2f(__x: f32) -> f32;
-    pub fn __powf(__x: f32, __y: f32) -> f32;
-    pub fn __sqrtf(__x: f32) -> f32;
-    pub fn __hypotf(__x: f32, __y: f32) -> f32;
-    pub fn __cbrtf(__x: f32) -> f32;
-    pub fn __ceilf(__x: f32) -> f32;
-    pub fn __fabsf(__x: f32) -> f32;
-    pub fn __floorf(__x: f32) -> f32;
-    pub fn __fmodf(__x: f32, __y: f32) -> f32;
-    pub fn __dremf(__x: f32, __y: f32) -> f32;
-    pub fn __significandf(__x: f32) -> f32;
-    pub fn __copysignf(__x: f32, __y: f32) -> f32;
-    pub fn __nanf(__tagb: *const ::core::ffi::c_char) -> f32;
-    pub fn __j0f(arg1: f32) -> f32;
-    pub fn __j1f(arg1: f32) -> f32;
-    pub fn __jnf(arg1: ::core::ffi::c_int, arg2: f32) -> f32;
-    pub fn __y0f(arg1: f32) -> f32;
-    pub fn __y1f(arg1: f32) -> f32;
-    pub fn __ynf(arg1: ::core::ffi::c_int, arg2: f32) -> f32;
-    pub fn __erff(arg1: f32) -> f32;
-    pub fn __erfcf(arg1: f32) -> f32;
-    pub fn __lgammaf(arg1: f32) -> f32;
-    pub fn __tgammaf(arg1: f32) -> f32;
-    pub fn __gammaf(arg1: f32) -> f32;
-    pub fn __lgammaf_r(arg1: f32, __signgamp: *mut ::core::ffi::c_int) -> f32;
-    pub fn __rintf(__x: f32) -> f32;
-    pub fn __nextafterf(__x: f32, __y: f32) -> f32;
-    pub fn __nexttowardf(__x: f32, __y: u128) -> f32;
-    pub fn __remainderf(__x: f32, __y: f32) -> f32;
-    pub fn __scalbnf(__x: f32, __n: ::core::ffi::c_int) -> f32;
-    pub fn __ilogbf(__x: f32) -> ::core::ffi::c_int;
-    pub fn __scalblnf(__x: f32, __n: ::core::ffi::c_long) -> f32;
-    pub fn __nearbyintf(__x: f32) -> f32;
-    pub fn __roundf(__x: f32) -> f32;
-    pub fn __truncf(__x: f32) -> f32;
-    pub fn __remquof(__x: f32, __y: f32, __quo: *mut ::core::ffi::c_int) -> f32;
-    pub fn __lrintf(__x: f32) -> ::core::ffi::c_long;
-    pub fn __llrintf(__x: f32) -> ::core::ffi::c_longlong;
-    pub fn __lroundf(__x: f32) -> ::core::ffi::c_long;
-    pub fn __llroundf(__x: f32) -> ::core::ffi::c_longlong;
-    pub fn __fdimf(__x: f32, __y: f32) -> f32;
-    pub fn __fmaxf(__x: f32, __y: f32) -> f32;
-    pub fn __fminf(__x: f32, __y: f32) -> f32;
-    pub fn __fmaf(__x: f32, __y: f32, __z: f32) -> f32;
-    pub fn __scalbf(__x: f32, __n: f32) -> f32;
-    pub fn __acosl(__x: u128) -> u128;
-    pub fn __asinl(__x: u128) -> u128;
-    pub fn __atanl(__x: u128) -> u128;
-    pub fn __atan2l(__y: u128, __x: u128) -> u128;
-    pub fn __cosl(__x: u128) -> u128;
-    pub fn __sinl(__x: u128) -> u128;
-    pub fn __tanl(__x: u128) -> u128;
-    pub fn __coshl(__x: u128) -> u128;
-    pub fn __sinhl(__x: u128) -> u128;
-    pub fn __tanhl(__x: u128) -> u128;
-    pub fn __acoshl(__x: u128) -> u128;
-    pub fn __asinhl(__x: u128) -> u128;
-    pub fn __atanhl(__x: u128) -> u128;
-    pub fn __expl(__x: u128) -> u128;
-    pub fn __frexpl(__x: u128, __exponent: *mut ::core::ffi::c_int) -> u128;
-    pub fn __ldexpl(__x: u128, __exponent: ::core::ffi::c_int) -> u128;
-    pub fn __logl(__x: u128) -> u128;
-    pub fn __log10l(__x: u128) -> u128;
-    pub fn __modfl(__x: u128, __iptr: *mut u128) -> u128;
-    pub fn __expm1l(__x: u128) -> u128;
-    pub fn __log1pl(__x: u128) -> u128;
-    pub fn __logbl(__x: u128) -> u128;
-    pub fn __exp2l(__x: u128) -> u128;
-    pub fn __log2l(__x: u128) -> u128;
-    pub fn __powl(__x: u128, __y: u128) -> u128;
-    pub fn __sqrtl(__x: u128) -> u128;
-    pub fn __hypotl(__x: u128, __y: u128) -> u128;
-    pub fn __cbrtl(__x: u128) -> u128;
-    pub fn __ceill(__x: u128) -> u128;
-    pub fn __fabsl(__x: u128) -> u128;
-    pub fn __floorl(__x: u128) -> u128;
-    pub fn __fmodl(__x: u128, __y: u128) -> u128;
-    pub fn __dreml(__x: u128, __y: u128) -> u128;
-    pub fn __significandl(__x: u128) -> u128;
-    pub fn __copysignl(__x: u128, __y: u128) -> u128;
-    pub fn __nanl(__tagb: *const ::core::ffi::c_char) -> u128;
-    pub fn __j0l(arg1: u128) -> u128;
-    pub fn __j1l(arg1: u128) -> u128;
-    pub fn __jnl(arg1: ::core::ffi::c_int, arg2: u128) -> u128;
-    pub fn __y0l(arg1: u128) -> u128;
-    pub fn __y1l(arg1: u128) -> u128;
-    pub fn __ynl(arg1: ::core::ffi::c_int, arg2: u128) -> u128;
-    pub fn __erfl(arg1: u128) -> u128;
-    pub fn __erfcl(arg1: u128) -> u128;
-    pub fn __lgammal(arg1: u128) -> u128;
-    pub fn __tgammal(arg1: u128) -> u128;
-    pub fn __gammal(arg1: u128) -> u128;
-    pub fn __lgammal_r(arg1: u128, __signgamp: *mut ::core::ffi::c_int) -> u128;
-    pub fn __rintl(__x: u128) -> u128;
-    pub fn __nextafterl(__x: u128, __y: u128) -> u128;
-    pub fn __nexttowardl(__x: u128, __y: u128) -> u128;
-    pub fn __remainderl(__x: u128, __y: u128) -> u128;
-    pub fn __scalbnl(__x: u128, __n: ::core::ffi::c_int) -> u128;
-    pub fn __ilogbl(__x: u128) -> ::core::ffi::c_int;
-    pub fn __scalblnl(__x: u128, __n: ::core::ffi::c_long) -> u128;
-    pub fn __nearbyintl(__x: u128) -> u128;
-    pub fn __roundl(__x: u128) -> u128;
-    pub fn __truncl(__x: u128) -> u128;
-    pub fn __remquol(__x: u128, __y: u128, __quo: *mut ::core::ffi::c_int) -> u128;
-    pub fn __lrintl(__x: u128) -> ::core::ffi::c_long;
-    pub fn __llrintl(__x: u128) -> ::core::ffi::c_longlong;
-    pub fn __lroundl(__x: u128) -> ::core::ffi::c_long;
-    pub fn __llroundl(__x: u128) -> ::core::ffi::c_longlong;
-    pub fn __fdiml(__x: u128, __y: u128) -> u128;
-    pub fn __fmaxl(__x: u128, __y: u128) -> u128;
-    pub fn __fminl(__x: u128, __y: u128) -> u128;
-    pub fn __fmal(__x: u128, __y: u128, __z: u128) -> u128;
-    pub fn __scalbl(__x: u128, __n: u128) -> u128;
     pub fn strlcat(
         dst: *mut ::core::ffi::c_char,
         src: *const ::core::ffi::c_char,
@@ -36073,7 +33573,7 @@ extern "C" {
         nel: usize,
         elsize: usize,
         cmp: ::core::option::Option<
-            unsafe extern "C" fn(
+            unsafe extern "C-unwind" fn(
                 arg1: *const ::core::ffi::c_void,
                 arg2: *const ::core::ffi::c_void,
             ) -> ::core::ffi::c_int,
@@ -36103,7 +33603,7 @@ extern "C" {
         nmemb: usize,
         size: usize,
         compar: ::core::option::Option<
-            unsafe extern "C" fn(
+            unsafe extern "C-unwind" fn(
                 arg1: *const ::core::ffi::c_void,
                 arg2: *const ::core::ffi::c_void,
                 arg3: *mut ::core::ffi::c_void,
@@ -36145,6 +33645,11 @@ extern "C" {
     pub fn initStringInfo(str_: StringInfo);
     pub fn resetStringInfo(str_: StringInfo);
     pub fn appendStringInfo(str_: StringInfo, fmt: *const ::core::ffi::c_char, ...);
+    pub fn appendStringInfoVA(
+        str_: StringInfo,
+        fmt: *const ::core::ffi::c_char,
+        args: *mut __va_list_tag,
+    ) -> ::core::ffi::c_int;
     pub fn appendStringInfoString(str_: StringInfo, s: *const ::core::ffi::c_char);
     pub fn appendStringInfoChar(str_: StringInfo, ch: ::core::ffi::c_char);
     pub fn appendStringInfoSpaces(str_: StringInfo, count: ::core::ffi::c_int);
@@ -36305,6 +33810,12 @@ extern "C" {
     pub fn pnstrdup(in_: *const ::core::ffi::c_char, len: Size) -> *mut ::core::ffi::c_char;
     pub fn pchomp(in_: *const ::core::ffi::c_char) -> *mut ::core::ffi::c_char;
     pub fn psprintf(fmt: *const ::core::ffi::c_char, ...) -> *mut ::core::ffi::c_char;
+    pub fn pvsnprintf(
+        buf: *mut ::core::ffi::c_char,
+        len: usize,
+        fmt: *const ::core::ffi::c_char,
+        args: *mut __va_list_tag,
+    ) -> usize;
     pub static mut no_such_variable: ::core::ffi::c_int;
     pub fn outNode(str_: *mut StringInfoData, obj: *const ::core::ffi::c_void);
     pub fn outToken(str_: *mut StringInfoData, s: *const ::core::ffi::c_char);
@@ -37340,10 +34851,6 @@ extern "C" {
         name: *const ::core::ffi::c_char,
     ) -> EphemeralNamedRelation;
     pub fn ENRMetadataGetTupDesc(enrmd: EphemeralNamedRelationMetadata) -> TupleDesc;
-    pub fn crypt(
-        __key: *const ::core::ffi::c_char,
-        __salt: *const ::core::ffi::c_char,
-    ) -> *mut ::core::ffi::c_char;
     pub static mut max_files_per_process: ::core::ffi::c_int;
     pub static mut data_sync_retry: bool;
     pub static mut recovery_init_sync_method: ::core::ffi::c_int;
@@ -37785,6 +35292,18 @@ extern "C" {
         direction: ScanDirection::Type,
     ) -> HeapTuple;
     pub fn systable_endscan_ordered(sysscan: SysScanDesc);
+    pub fn systable_inplace_update_begin(
+        relation: Relation,
+        indexId: Oid,
+        indexOK: bool,
+        snapshot: Snapshot,
+        nkeys: ::core::ffi::c_int,
+        key: *const ScanKeyData,
+        oldtupcopy: *mut HeapTuple,
+        state: *mut *mut ::core::ffi::c_void,
+    );
+    pub fn systable_inplace_update_finish(state: *mut ::core::ffi::c_void, tuple: HeapTuple);
+    pub fn systable_inplace_update_cancel(state: *mut ::core::ffi::c_void);
     pub fn GetIndexAmRoutine(amhandler: Oid) -> *mut IndexAmRoutine;
     pub fn GetIndexAmRoutineByAmId(amoid: Oid, noerror: bool) -> *mut IndexAmRoutine;
     pub fn lookup_type_cache(type_id: Oid, flags: ::core::ffi::c_int) -> *mut TypeCacheEntry;
@@ -38137,14 +35656,17 @@ extern "C" {
     pub static pg_rightmost_one_pos: [uint8; 256usize];
     pub static pg_number_of_ones: [uint8; 256usize];
     pub static mut pg_popcount32:
-        ::core::option::Option<unsafe extern "C" fn(word: uint32) -> ::core::ffi::c_int>;
+        ::core::option::Option<unsafe extern "C-unwind" fn(word: uint32) -> ::core::ffi::c_int>;
     pub static mut pg_popcount64:
-        ::core::option::Option<unsafe extern "C" fn(word: uint64) -> ::core::ffi::c_int>;
+        ::core::option::Option<unsafe extern "C-unwind" fn(word: uint64) -> ::core::ffi::c_int>;
     pub static mut pg_popcount_optimized: ::core::option::Option<
-        unsafe extern "C" fn(buf: *const ::core::ffi::c_char, bytes: ::core::ffi::c_int) -> uint64,
+        unsafe extern "C-unwind" fn(
+            buf: *const ::core::ffi::c_char,
+            bytes: ::core::ffi::c_int,
+        ) -> uint64,
     >;
     pub static mut pg_popcount_masked_optimized: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             buf: *const ::core::ffi::c_char,
             bytes: ::core::ffi::c_int,
             mask: bits8,
@@ -38987,7 +36509,9 @@ extern "C" {
     pub fn GetUserId() -> Oid;
     pub fn GetOuterUserId() -> Oid;
     pub fn GetSessionUserId() -> Oid;
+    pub fn GetSessionUserIsSuperuser() -> bool;
     pub fn GetAuthenticatedUserId() -> Oid;
+    pub fn SetAuthenticatedUserId(userid: Oid);
     pub fn GetUserIdAndSecContext(userid: *mut Oid, sec_context: *mut ::core::ffi::c_int);
     pub fn SetUserIdAndSecContext(userid: Oid, sec_context: ::core::ffi::c_int);
     pub fn InLocalUserIdChange() -> bool;
@@ -39070,10 +36594,6 @@ extern "C" {
         val: *const int64,
     );
     pub fn pgstat_progress_end_command();
-    pub fn bindresvport6(
-        __sockfd: ::core::ffi::c_int,
-        __sock_in: *mut sockaddr_in6,
-    ) -> ::core::ffi::c_int;
     pub static mut pgstat_track_activities: bool;
     pub static mut pgstat_track_activity_query_size: ::core::ffi::c_int;
     pub static mut MyBEEntry: *mut PgBackendStatus;
@@ -39406,7 +36926,7 @@ extern "C" {
         len: usize,
     ) -> pg_crc32c;
     pub static mut pg_comp_crc32c: ::core::option::Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             crc: pg_crc32c,
             data: *const ::core::ffi::c_void,
             len: usize,
@@ -39592,6 +37112,12 @@ extern "C" {
         oidcol: AttrNumber,
         objectId: Oid,
     ) -> HeapTuple;
+    pub fn get_catalog_object_by_oid_extended(
+        catalog: Relation,
+        oidcol: AttrNumber,
+        objectId: Oid,
+        locktup: bool,
+    ) -> HeapTuple;
     pub fn getObjectDescription(
         object: *const ObjectAddress,
         missing_ok: bool,
@@ -39718,6 +37244,13 @@ extern "C" {
         nforks: ::core::ffi::c_int,
         nblocks: *mut BlockNumber,
     );
+    pub fn smgrtruncate2(
+        reln: SMgrRelation,
+        forknum: *mut ForkNumber::Type,
+        nforks: ::core::ffi::c_int,
+        old_nblocks: *mut BlockNumber,
+        nblocks: *mut BlockNumber,
+    );
     pub fn smgrimmedsync(reln: SMgrRelation, forknum: ForkNumber::Type);
     pub fn smgrregistersync(reln: SMgrRelation, forknum: ForkNumber::Type);
     pub fn AtEOXact_SMgr();
@@ -39763,9 +37296,9 @@ extern "C" {
     pub fn SendSharedInvalidMessages(msgs: *const SharedInvalidationMessage, n: ::core::ffi::c_int);
     pub fn ReceiveSharedInvalidMessages(
         invalFunction: ::core::option::Option<
-            unsafe extern "C" fn(msg: *mut SharedInvalidationMessage),
+            unsafe extern "C-unwind" fn(msg: *mut SharedInvalidationMessage),
         >,
-        resetFunction: ::core::option::Option<unsafe extern "C" fn()>,
+        resetFunction: ::core::option::Option<unsafe extern "C-unwind" fn()>,
     );
     pub fn HandleCatchupInterrupt();
     pub fn ProcessCatchupInterrupt();
@@ -40360,6 +37893,22 @@ extern "C" {
         buffer: *mut Buffer,
         tmfd: *mut TM_FailureData,
     ) -> TM_Result::Type;
+    pub fn heap_inplace_lock(
+        relation: Relation,
+        oldtup_ptr: HeapTuple,
+        buffer: Buffer,
+        release_callback: ::core::option::Option<
+            unsafe extern "C-unwind" fn(arg1: *mut ::core::ffi::c_void),
+        >,
+        arg: *mut ::core::ffi::c_void,
+    ) -> bool;
+    pub fn heap_inplace_update_and_unlock(
+        relation: Relation,
+        oldtup: HeapTuple,
+        tuple: HeapTuple,
+        buffer: Buffer,
+    );
+    pub fn heap_inplace_unlock(relation: Relation, oldtup: HeapTuple, buffer: Buffer);
     pub fn heap_inplace_update(relation: Relation, tuple: HeapTuple);
     pub fn heap_prepare_freeze_tuple(
         tuple: HeapTupleHeader,
@@ -41232,6 +38781,166 @@ extern "C" {
     pub fn dropDatabaseDependencies(databaseId: Oid);
     pub fn shdepDropOwned(roleids: *mut List, behavior: DropBehavior::Type);
     pub fn shdepReassignOwned(roleids: *mut List, newrole: Oid);
+    pub fn CatalogOpenIndexes(heapRel: Relation) -> CatalogIndexState;
+    pub fn CatalogCloseIndexes(indstate: CatalogIndexState);
+    pub fn CatalogTupleInsert(heapRel: Relation, tup: HeapTuple);
+    pub fn CatalogTupleInsertWithInfo(
+        heapRel: Relation,
+        tup: HeapTuple,
+        indstate: CatalogIndexState,
+    );
+    pub fn CatalogTuplesMultiInsertWithInfo(
+        heapRel: Relation,
+        slot: *mut *mut TupleTableSlot,
+        ntuples: ::core::ffi::c_int,
+        indstate: CatalogIndexState,
+    );
+    pub fn CatalogTupleUpdate(heapRel: Relation, otid: ItemPointer, tup: HeapTuple);
+    pub fn CatalogTupleUpdateWithInfo(
+        heapRel: Relation,
+        otid: ItemPointer,
+        tup: HeapTuple,
+        indstate: CatalogIndexState,
+    );
+    pub fn CatalogTupleDelete(heapRel: Relation, tid: ItemPointer);
+    pub fn make_parsestate(parentParseState: *mut ParseState) -> *mut ParseState;
+    pub fn free_parsestate(pstate: *mut ParseState);
+    pub fn parser_errposition(
+        pstate: *mut ParseState,
+        location: ::core::ffi::c_int,
+    ) -> ::core::ffi::c_int;
+    pub fn setup_parser_errposition_callback(
+        pcbstate: *mut ParseCallbackState,
+        pstate: *mut ParseState,
+        location: ::core::ffi::c_int,
+    );
+    pub fn cancel_parser_errposition_callback(pcbstate: *mut ParseCallbackState);
+    pub fn transformContainerType(containerType: *mut Oid, containerTypmod: *mut int32);
+    pub fn transformContainerSubscripts(
+        pstate: *mut ParseState,
+        containerBase: *mut Node,
+        containerType: Oid,
+        containerTypMod: int32,
+        indirection: *mut List,
+        isAssignment: bool,
+    ) -> *mut SubscriptingRef;
+    pub fn make_const(pstate: *mut ParseState, aconst: *mut A_Const) -> *mut Const;
+    pub fn heap_create(
+        relname: *const ::core::ffi::c_char,
+        relnamespace: Oid,
+        reltablespace: Oid,
+        relid: Oid,
+        relfilenumber: RelFileNumber,
+        accessmtd: Oid,
+        tupDesc: TupleDesc,
+        relkind: ::core::ffi::c_char,
+        relpersistence: ::core::ffi::c_char,
+        shared_relation: bool,
+        mapped_relation: bool,
+        allow_system_table_mods: bool,
+        relfrozenxid: *mut TransactionId,
+        relminmxid: *mut MultiXactId,
+        create_storage: bool,
+    ) -> Relation;
+    pub fn heap_create_with_catalog(
+        relname: *const ::core::ffi::c_char,
+        relnamespace: Oid,
+        reltablespace: Oid,
+        relid: Oid,
+        reltypeid: Oid,
+        reloftypeid: Oid,
+        ownerid: Oid,
+        accessmtd: Oid,
+        tupdesc: TupleDesc,
+        cooked_constraints: *mut List,
+        relkind: ::core::ffi::c_char,
+        relpersistence: ::core::ffi::c_char,
+        shared_relation: bool,
+        mapped_relation: bool,
+        oncommit: OnCommitAction::Type,
+        reloptions: Datum,
+        use_user_acl: bool,
+        allow_system_table_mods: bool,
+        is_internal: bool,
+        relrewrite: Oid,
+        typaddress: *mut ObjectAddress,
+    ) -> Oid;
+    pub fn heap_drop_with_catalog(relid: Oid);
+    pub fn heap_truncate(relids: *mut List);
+    pub fn heap_truncate_one_rel(rel: Relation);
+    pub fn heap_truncate_check_FKs(relations: *mut List, tempTables: bool);
+    pub fn heap_truncate_find_FKs(relationIds: *mut List) -> *mut List;
+    pub fn InsertPgAttributeTuples(
+        pg_attribute_rel: Relation,
+        tupdesc: TupleDesc,
+        new_rel_oid: Oid,
+        tupdesc_extra: *const FormExtraData_pg_attribute,
+        indstate: CatalogIndexState,
+    );
+    pub fn InsertPgClassTuple(
+        pg_class_desc: Relation,
+        new_rel_desc: Relation,
+        new_rel_oid: Oid,
+        relacl: Datum,
+        reloptions: Datum,
+    );
+    pub fn AddRelationNewConstraints(
+        rel: Relation,
+        newColDefaults: *mut List,
+        newConstraints: *mut List,
+        allow_merge: bool,
+        is_local: bool,
+        is_internal: bool,
+        queryString: *const ::core::ffi::c_char,
+    ) -> *mut List;
+    pub fn RelationClearMissing(rel: Relation);
+    pub fn StoreAttrMissingVal(rel: Relation, attnum: AttrNumber, missingval: Datum);
+    pub fn SetAttrMissing(
+        relid: Oid,
+        attname: *mut ::core::ffi::c_char,
+        value: *mut ::core::ffi::c_char,
+    );
+    pub fn cookDefault(
+        pstate: *mut ParseState,
+        raw_default: *mut Node,
+        atttypid: Oid,
+        atttypmod: int32,
+        attname: *const ::core::ffi::c_char,
+        attgenerated: ::core::ffi::c_char,
+    ) -> *mut Node;
+    pub fn DeleteRelationTuple(relid: Oid);
+    pub fn DeleteAttributeTuples(relid: Oid);
+    pub fn DeleteSystemAttributeTuples(relid: Oid);
+    pub fn RemoveAttributeById(relid: Oid, attnum: AttrNumber);
+    pub fn CopyStatistics(fromrelid: Oid, torelid: Oid);
+    pub fn RemoveStatistics(relid: Oid, attnum: AttrNumber);
+    pub fn SystemAttributeDefinition(attno: AttrNumber) -> *const FormData_pg_attribute;
+    pub fn SystemAttributeByName(
+        attname: *const ::core::ffi::c_char,
+    ) -> *const FormData_pg_attribute;
+    pub fn CheckAttributeNamesTypes(
+        tupdesc: TupleDesc,
+        relkind: ::core::ffi::c_char,
+        flags: ::core::ffi::c_int,
+    );
+    pub fn CheckAttributeType(
+        attname: *const ::core::ffi::c_char,
+        atttypid: Oid,
+        attcollation: Oid,
+        containing_rowtypes: *mut List,
+        flags: ::core::ffi::c_int,
+    );
+    pub fn StorePartitionKey(
+        rel: Relation,
+        strategy: ::core::ffi::c_char,
+        partnatts: int16,
+        partattrs: *mut AttrNumber,
+        partexprs: *mut List,
+        partopclass: *mut Oid,
+        partcollation: *mut Oid,
+    );
+    pub fn RemovePartitionKeyByRelId(relid: Oid);
+    pub fn StorePartitionBound(rel: Relation, parent: Relation, bound: *mut PartitionBoundSpec);
     pub fn index_check_primary_key(
         heapRel: Relation,
         indexInfo: *const IndexInfo,
@@ -41335,28 +39044,6 @@ extern "C" {
     pub fn SerializeReindexState(maxsize: Size, start_address: *mut ::core::ffi::c_char);
     pub fn RestoreReindexState(reindexstate: *const ::core::ffi::c_void);
     pub fn IndexSetParentIndex(partitionIdx: Relation, parentOid: Oid);
-    pub fn CatalogOpenIndexes(heapRel: Relation) -> CatalogIndexState;
-    pub fn CatalogCloseIndexes(indstate: CatalogIndexState);
-    pub fn CatalogTupleInsert(heapRel: Relation, tup: HeapTuple);
-    pub fn CatalogTupleInsertWithInfo(
-        heapRel: Relation,
-        tup: HeapTuple,
-        indstate: CatalogIndexState,
-    );
-    pub fn CatalogTuplesMultiInsertWithInfo(
-        heapRel: Relation,
-        slot: *mut *mut TupleTableSlot,
-        ntuples: ::core::ffi::c_int,
-        indstate: CatalogIndexState,
-    );
-    pub fn CatalogTupleUpdate(heapRel: Relation, otid: ItemPointer, tup: HeapTuple);
-    pub fn CatalogTupleUpdateWithInfo(
-        heapRel: Relation,
-        otid: ItemPointer,
-        tup: HeapTuple,
-        indstate: CatalogIndexState,
-    );
-    pub fn CatalogTupleDelete(heapRel: Relation, tid: ItemPointer);
     pub fn RangeVarGetRelidExtended(
         relation: *const RangeVar,
         lockmode: LOCKMODE,
@@ -41610,28 +39297,6 @@ extern "C" {
     ) -> ObjectAddress;
     pub fn function_parse_error_transpose(prosrc: *const ::core::ffi::c_char) -> bool;
     pub fn oid_array_to_list(datum: Datum) -> *mut List;
-    pub fn make_parsestate(parentParseState: *mut ParseState) -> *mut ParseState;
-    pub fn free_parsestate(pstate: *mut ParseState);
-    pub fn parser_errposition(
-        pstate: *mut ParseState,
-        location: ::core::ffi::c_int,
-    ) -> ::core::ffi::c_int;
-    pub fn setup_parser_errposition_callback(
-        pcbstate: *mut ParseCallbackState,
-        pstate: *mut ParseState,
-        location: ::core::ffi::c_int,
-    );
-    pub fn cancel_parser_errposition_callback(pcbstate: *mut ParseCallbackState);
-    pub fn transformContainerType(containerType: *mut Oid, containerTypmod: *mut int32);
-    pub fn transformContainerSubscripts(
-        pstate: *mut ParseState,
-        containerBase: *mut Node,
-        containerType: Oid,
-        containerTypMod: int32,
-        indirection: *mut List,
-        isAssignment: bool,
-    ) -> *mut SubscriptingRef;
-    pub fn make_const(pstate: *mut ParseState, aconst: *mut A_Const) -> *mut Const;
     pub fn acldefault(objtype: ObjectType::Type, ownerId: Oid) -> *mut Acl;
     pub fn get_user_default_acl(objtype: ObjectType::Type, ownerId: Oid, nsp_oid: Oid) -> *mut Acl;
     pub fn recordDependencyOnNewAcl(
@@ -44137,9 +41802,15 @@ extern "C" {
     pub fn pg_char_to_encoding_private(name: *const ::core::ffi::c_char) -> ::core::ffi::c_int;
     pub fn pg_encoding_to_char_private(encoding: ::core::ffi::c_int) -> *const ::core::ffi::c_char;
     pub fn pg_valid_server_encoding_id_private(encoding: ::core::ffi::c_int) -> ::core::ffi::c_int;
+    pub fn pg_encoding_set_invalid(encoding: ::core::ffi::c_int, dst: *mut ::core::ffi::c_char);
     pub fn pg_encoding_mblen(
         encoding: ::core::ffi::c_int,
         mbstr: *const ::core::ffi::c_char,
+    ) -> ::core::ffi::c_int;
+    pub fn pg_encoding_mblen_or_incomplete(
+        encoding: ::core::ffi::c_int,
+        mbstr: *const ::core::ffi::c_char,
+        remaining: usize,
     ) -> ::core::ffi::c_int;
     pub fn pg_encoding_mblen_bounded(
         encoding: ::core::ffi::c_int,
@@ -46822,6 +44493,13 @@ extern "C" {
         targetTypmod: int32,
         constructName: *const ::core::ffi::c_char,
     ) -> *mut Node;
+    pub fn coerce_null_to_domain(
+        typid: Oid,
+        typmod: int32,
+        collation: Oid,
+        typlen: ::core::ffi::c_int,
+        typbyval: bool,
+    ) -> *mut Node;
     pub fn parser_coercion_errposition(
         pstate: *mut ParseState,
         coerce_location: ::core::ffi::c_int,
@@ -46898,6 +44576,99 @@ extern "C" {
         warn: bool,
     );
     pub fn scanner_isspace(ch: ::core::ffi::c_char) -> bool;
+    pub fn get_hash_partition_greatest_modulus(bound: PartitionBoundInfo) -> ::core::ffi::c_int;
+    pub fn compute_partition_hash_value(
+        partnatts: ::core::ffi::c_int,
+        partsupfunc: *mut FmgrInfo,
+        partcollation: *const Oid,
+        values: *const Datum,
+        isnull: *const bool,
+    ) -> uint64;
+    pub fn get_qual_from_partbound(parent: Relation, spec: *mut PartitionBoundSpec) -> *mut List;
+    pub fn partition_bounds_create(
+        boundspecs: *mut *mut PartitionBoundSpec,
+        nparts: ::core::ffi::c_int,
+        key: PartitionKey,
+        mapping: *mut *mut ::core::ffi::c_int,
+    ) -> PartitionBoundInfo;
+    pub fn partition_bounds_equal(
+        partnatts: ::core::ffi::c_int,
+        parttyplen: *mut int16,
+        parttypbyval: *mut bool,
+        b1: PartitionBoundInfo,
+        b2: PartitionBoundInfo,
+    ) -> bool;
+    pub fn partition_bounds_copy(src: PartitionBoundInfo, key: PartitionKey) -> PartitionBoundInfo;
+    pub fn partition_bounds_merge(
+        partnatts: ::core::ffi::c_int,
+        partsupfunc: *mut FmgrInfo,
+        partcollation: *mut Oid,
+        outer_rel: *mut RelOptInfo,
+        inner_rel: *mut RelOptInfo,
+        jointype: JoinType::Type,
+        outer_parts: *mut *mut List,
+        inner_parts: *mut *mut List,
+    ) -> PartitionBoundInfo;
+    pub fn partitions_are_ordered(
+        boundinfo: PartitionBoundInfo,
+        live_parts: *mut Bitmapset,
+    ) -> bool;
+    pub fn check_new_partition_bound(
+        relname: *mut ::core::ffi::c_char,
+        parent: Relation,
+        spec: *mut PartitionBoundSpec,
+        pstate: *mut ParseState,
+    );
+    pub fn check_default_partition_contents(
+        parent: Relation,
+        default_rel: Relation,
+        new_spec: *mut PartitionBoundSpec,
+    );
+    pub fn partition_rbound_datum_cmp(
+        partsupfunc: *mut FmgrInfo,
+        partcollation: *mut Oid,
+        rb_datums: *mut Datum,
+        rb_kind: *mut PartitionRangeDatumKind::Type,
+        tuple_datums: *mut Datum,
+        n_tuple_datums: ::core::ffi::c_int,
+    ) -> int32;
+    pub fn partition_list_bsearch(
+        partsupfunc: *mut FmgrInfo,
+        partcollation: *mut Oid,
+        boundinfo: PartitionBoundInfo,
+        value: Datum,
+        is_equal: *mut bool,
+    ) -> ::core::ffi::c_int;
+    pub fn partition_range_datum_bsearch(
+        partsupfunc: *mut FmgrInfo,
+        partcollation: *mut Oid,
+        boundinfo: PartitionBoundInfo,
+        nvalues: ::core::ffi::c_int,
+        values: *mut Datum,
+        is_equal: *mut bool,
+    ) -> ::core::ffi::c_int;
+    pub fn partition_hash_bsearch(
+        boundinfo: PartitionBoundInfo,
+        modulus: ::core::ffi::c_int,
+        remainder: ::core::ffi::c_int,
+    ) -> ::core::ffi::c_int;
+    pub fn RelationGetPartitionDesc(rel: Relation, omit_detached: bool) -> PartitionDesc;
+    pub fn CreatePartitionDirectory(mcxt: MemoryContext, omit_detached: bool)
+        -> PartitionDirectory;
+    pub fn PartitionDirectoryLookup(arg1: PartitionDirectory, arg2: Relation) -> PartitionDesc;
+    pub fn DestroyPartitionDirectory(pdir: PartitionDirectory);
+    pub fn get_default_oid_from_partdesc(partdesc: PartitionDesc) -> Oid;
+    pub fn make_partition_pruneinfo(
+        root: *mut PlannerInfo,
+        parentrel: *mut RelOptInfo,
+        subpaths: *mut List,
+        prunequal: *mut List,
+    ) -> *mut PartitionPruneInfo;
+    pub fn prune_append_rel_partitions(rel: *mut RelOptInfo) -> *mut Bitmapset;
+    pub fn get_matching_partitions(
+        context: *mut PartitionPruneContext,
+        pruning_steps: *mut List,
+    ) -> *mut Bitmapset;
     pub fn make_expanded_record_from_typeid(
         type_id: Oid,
         typmod: int32,
@@ -47108,6 +44879,12 @@ extern "C" {
     pub fn plpgsql_scanner_init(str_: *const ::core::ffi::c_char);
     pub fn plpgsql_scanner_finish();
     pub fn plpgsql_yyparse() -> ::core::ffi::c_int;
+    pub static mut ConfigReloadPending: sig_atomic_t;
+    pub static mut ShutdownRequestPending: sig_atomic_t;
+    pub fn HandleMainLoopInterrupts();
+    pub fn SignalHandlerForConfigReload(postgres_signal_arg: ::core::ffi::c_int);
+    pub fn SignalHandlerForCrashExit(postgres_signal_arg: ::core::ffi::c_int);
+    pub fn SignalHandlerForShutdownRequest(postgres_signal_arg: ::core::ffi::c_int);
     pub static mut EnableSSL: bool;
     pub static mut SuperuserReservedConnections: ::core::ffi::c_int;
     pub static mut ReservedConnections: ::core::ffi::c_int;
@@ -47302,6 +45079,11 @@ extern "C" {
     pub fn ReorderBufferGetOldestXmin(rb: *mut ReorderBuffer) -> TransactionId;
     pub fn ReorderBufferGetCatalogChangesXacts(rb: *mut ReorderBuffer) -> *mut TransactionId;
     pub fn ReorderBufferSetRestartPoint(rb: *mut ReorderBuffer, ptr: XLogRecPtr);
+    pub fn ReorderBufferGetInvalidations(
+        rb: *mut ReorderBuffer,
+        xid: TransactionId,
+        msgs: *mut *mut SharedInvalidationMessage,
+    ) -> uint32;
     pub fn StartupReorderBuffer();
     pub fn _PG_output_plugin_init(cb: *mut OutputPluginCallbacks);
     pub fn OutputPluginPrepareWrite(ctx: *mut LogicalDecodingContext, last_write: bool);
@@ -47622,6 +45404,16 @@ extern "C" {
         moveto: XLogRecPtr,
         found_consistent_snapshot: *mut bool,
     ) -> XLogRecPtr;
+    pub static mut ParallelApplyMessagePending: sig_atomic_t;
+    pub fn ApplyWorkerMain(main_arg: Datum);
+    pub fn ParallelApplyWorkerMain(main_arg: Datum);
+    pub fn TablesyncWorkerMain(main_arg: Datum);
+    pub fn IsLogicalWorker() -> bool;
+    pub fn IsLogicalParallelApplyWorker() -> bool;
+    pub fn HandleParallelApplyMessageInterrupt();
+    pub fn HandleParallelApplyMessages();
+    pub fn LogicalRepWorkersWakeupAtCommit(subid: Oid);
+    pub fn AtEOXact_LogicalRepWorkers(isCommit: bool);
     pub fn QueryRewrite(parsetree: *mut Query) -> *mut List;
     pub fn AcquireRewriteLocks(parsetree: *mut Query, forExecute: bool, forUpdatePushedDown: bool);
     pub fn build_column_default(rel: Relation, attrno: ::core::ffi::c_int) -> *mut Node;
@@ -47658,6 +45450,132 @@ extern "C" {
         hasRowSecurity: *mut bool,
         hasSubLinks: *mut bool,
     );
+    pub fn statext_ndistinct_load(mvoid: Oid, inh: bool) -> *mut MVNDistinct;
+    pub fn statext_dependencies_load(mvoid: Oid, inh: bool) -> *mut MVDependencies;
+    pub fn statext_mcv_load(mvoid: Oid, inh: bool) -> *mut MCVList;
+    pub fn BuildRelationExtStatistics(
+        onerel: Relation,
+        inh: bool,
+        totalrows: f64,
+        numrows: ::core::ffi::c_int,
+        rows: *mut HeapTuple,
+        natts: ::core::ffi::c_int,
+        vacattrstats: *mut *mut VacAttrStats,
+    );
+    pub fn ComputeExtStatisticsRows(
+        onerel: Relation,
+        natts: ::core::ffi::c_int,
+        vacattrstats: *mut *mut VacAttrStats,
+    ) -> ::core::ffi::c_int;
+    pub fn statext_is_kind_built(htup: HeapTuple, type_: ::core::ffi::c_char) -> bool;
+    pub fn dependencies_clauselist_selectivity(
+        root: *mut PlannerInfo,
+        clauses: *mut List,
+        varRelid: ::core::ffi::c_int,
+        jointype: JoinType::Type,
+        sjinfo: *mut SpecialJoinInfo,
+        rel: *mut RelOptInfo,
+        estimatedclauses: *mut *mut Bitmapset,
+    ) -> Selectivity;
+    pub fn statext_clauselist_selectivity(
+        root: *mut PlannerInfo,
+        clauses: *mut List,
+        varRelid: ::core::ffi::c_int,
+        jointype: JoinType::Type,
+        sjinfo: *mut SpecialJoinInfo,
+        rel: *mut RelOptInfo,
+        estimatedclauses: *mut *mut Bitmapset,
+        is_or: bool,
+    ) -> Selectivity;
+    pub fn has_stats_of_kind(stats: *mut List, requiredkind: ::core::ffi::c_char) -> bool;
+    pub fn choose_best_statistics(
+        stats: *mut List,
+        requiredkind: ::core::ffi::c_char,
+        inh: bool,
+        clause_attnums: *mut *mut Bitmapset,
+        clause_exprs: *mut *mut List,
+        nclauses: ::core::ffi::c_int,
+    ) -> *mut StatisticExtInfo;
+    pub fn statext_expressions_load(stxoid: Oid, inh: bool, idx: ::core::ffi::c_int) -> HeapTuple;
+    pub static mut BufferDescriptors: *mut BufferDescPadded;
+    pub static mut BufferIOCVArray: *mut ConditionVariableMinimallyPadded;
+    pub static mut BackendWritebackContext: WritebackContext;
+    pub static mut LocalBufferDescriptors: *mut BufferDesc;
+    pub fn LockBufHdr(desc: *mut BufferDesc) -> uint32;
+    pub static mut CkptBufferIds: *mut CkptSortItem;
+    pub static buffer_io_resowner_desc: ResourceOwnerDesc;
+    pub static buffer_pin_resowner_desc: ResourceOwnerDesc;
+    pub fn WritebackContextInit(
+        context: *mut WritebackContext,
+        max_pending: *mut ::core::ffi::c_int,
+    );
+    pub fn IssuePendingWritebacks(wb_context: *mut WritebackContext, io_context: IOContext::Type);
+    pub fn ScheduleBufferTagForWriteback(
+        wb_context: *mut WritebackContext,
+        io_context: IOContext::Type,
+        tag: *mut BufferTag,
+    );
+    pub fn IOContextForStrategy(strategy: BufferAccessStrategy) -> IOContext::Type;
+    pub fn StrategyGetBuffer(
+        strategy: BufferAccessStrategy,
+        buf_state: *mut uint32,
+        from_ring: *mut bool,
+    ) -> *mut BufferDesc;
+    pub fn StrategyFreeBuffer(buf: *mut BufferDesc);
+    pub fn StrategyRejectBuffer(
+        strategy: BufferAccessStrategy,
+        buf: *mut BufferDesc,
+        from_ring: bool,
+    ) -> bool;
+    pub fn StrategySyncStart(
+        complete_passes: *mut uint32,
+        num_buf_alloc: *mut uint32,
+    ) -> ::core::ffi::c_int;
+    pub fn StrategyNotifyBgWriter(bgwprocno: ::core::ffi::c_int);
+    pub fn StrategyShmemSize() -> Size;
+    pub fn StrategyInitialize(init: bool);
+    pub fn have_free_buffer() -> bool;
+    pub fn BufTableShmemSize(size: ::core::ffi::c_int) -> Size;
+    pub fn InitBufTable(size: ::core::ffi::c_int);
+    pub fn BufTableHashCode(tagPtr: *mut BufferTag) -> uint32;
+    pub fn BufTableLookup(tagPtr: *mut BufferTag, hashcode: uint32) -> ::core::ffi::c_int;
+    pub fn BufTableInsert(
+        tagPtr: *mut BufferTag,
+        hashcode: uint32,
+        buf_id: ::core::ffi::c_int,
+    ) -> ::core::ffi::c_int;
+    pub fn BufTableDelete(tagPtr: *mut BufferTag, hashcode: uint32);
+    pub fn PinLocalBuffer(buf_hdr: *mut BufferDesc, adjust_usagecount: bool) -> bool;
+    pub fn UnpinLocalBuffer(buffer: Buffer);
+    pub fn UnpinLocalBufferNoOwner(buffer: Buffer);
+    pub fn PrefetchLocalBuffer(
+        smgr: SMgrRelation,
+        forkNum: ForkNumber::Type,
+        blockNum: BlockNumber,
+    ) -> PrefetchBufferResult;
+    pub fn LocalBufferAlloc(
+        smgr: SMgrRelation,
+        forkNum: ForkNumber::Type,
+        blockNum: BlockNumber,
+        foundPtr: *mut bool,
+    ) -> *mut BufferDesc;
+    pub fn ExtendBufferedRelLocal(
+        bmr: BufferManagerRelation,
+        fork: ForkNumber::Type,
+        flags: uint32,
+        extend_by: uint32,
+        extend_upto: BlockNumber,
+        buffers: *mut Buffer,
+        extended_by: *mut uint32,
+    ) -> BlockNumber;
+    pub fn MarkLocalBufferDirty(buffer: Buffer);
+    pub fn DropRelationLocalBuffers(
+        rlocator: RelFileLocator,
+        forkNum: ForkNumber::Type,
+        firstDelBlock: BlockNumber,
+    );
+    pub fn DropRelationAllLocalBuffers(rlocator: RelFileLocator);
+    pub fn AtEOXact_LocalBuffers(isCommit: bool);
     pub fn BufFileCreateTemp(interXact: bool) -> *mut BufFile;
     pub fn BufFileClose(file: *mut BufFile);
     pub fn BufFileRead(file: *mut BufFile, ptr: *mut ::core::ffi::c_void, size: usize) -> usize;
@@ -48133,6 +46051,11 @@ extern "C" {
     pub fn CreateCommandTag(parsetree: *mut Node) -> CommandTag::Type;
     pub fn GetCommandLogLevel(parsetree: *mut Node) -> LogStmtLevel::Type;
     pub fn CommandIsReadOnly(pstmt: *mut PlannedStmt) -> bool;
+    pub static mut TSCurrentConfig: *mut ::core::ffi::c_char;
+    pub fn lookup_ts_parser_cache(prsId: Oid) -> *mut TSParserCacheEntry;
+    pub fn lookup_ts_dictionary_cache(dictId: Oid) -> *mut TSDictionaryCacheEntry;
+    pub fn lookup_ts_config_cache(cfgId: Oid) -> *mut TSConfigCacheEntry;
+    pub fn getTSCurrentConfig(emitError: bool) -> Oid;
     pub fn compareWordEntryPos(
         a: *const ::core::ffi::c_void,
         b: *const ::core::ffi::c_void,
@@ -48146,7 +46069,9 @@ extern "C" {
         fname: *const ::core::ffi::c_char,
         s: *mut StopList,
         wordop: ::core::option::Option<
-            unsafe extern "C" fn(arg1: *const ::core::ffi::c_char) -> *mut ::core::ffi::c_char,
+            unsafe extern "C-unwind" fn(
+                arg1: *const ::core::ffi::c_char,
+            ) -> *mut ::core::ffi::c_char,
         >,
     );
     pub fn searchstoplist(s: *mut StopList, key: *mut ::core::ffi::c_char) -> bool;
@@ -51812,6 +49737,16 @@ extern "C" {
     pub fn get_publication_name(pubid: Oid, missing_ok: bool) -> *mut ::core::ffi::c_char;
     pub fn get_subscription_oid(subname: *const ::core::ffi::c_char, missing_ok: bool) -> Oid;
     pub fn get_subscription_name(subid: Oid, missing_ok: bool) -> *mut ::core::ffi::c_char;
+    pub static mut update_process_title: bool;
+    pub fn save_ps_display_args(
+        argc: ::core::ffi::c_int,
+        argv: *mut *mut ::core::ffi::c_char,
+    ) -> *mut *mut ::core::ffi::c_char;
+    pub fn init_ps_display(fixed_part: *const ::core::ffi::c_char);
+    pub fn set_ps_display_suffix(suffix: *const ::core::ffi::c_char);
+    pub fn set_ps_display_remove_suffix();
+    pub fn set_ps_display_with_len(activity: *const ::core::ffi::c_char, len: usize);
+    pub fn get_ps_display(displen: *mut ::core::ffi::c_int) -> *const ::core::ffi::c_char;
     pub fn format_procedure_extended(procedure_oid: Oid, flags: bits16)
         -> *mut ::core::ffi::c_char;
     pub fn format_operator_extended(operator_oid: Oid, flags: bits16) -> *mut ::core::ffi::c_char;
@@ -52055,6 +49990,13 @@ extern "C" {
         useOr: bool,
         varRelid: ::core::ffi::c_int,
     ) -> Selectivity;
+    pub fn get_tablespace_page_costs(
+        spcid: Oid,
+        spc_random_page_cost: *mut float8,
+        spc_seq_page_cost: *mut float8,
+    );
+    pub fn get_tablespace_io_concurrency(spcid: Oid) -> ::core::ffi::c_int;
+    pub fn get_tablespace_maintenance_io_concurrency(spcid: Oid) -> ::core::ffi::c_int;
     pub fn CreateCacheMemoryContext();
     pub fn InitCatCache(
         id: ::core::ffi::c_int,
@@ -52099,6 +50041,7 @@ extern "C" {
     ) -> *mut CatCList;
     pub fn ReleaseCatCacheList(list: *mut CatCList);
     pub fn ResetCatalogCaches();
+    pub fn ResetCatalogCachesExt(debug_discard: bool);
     pub fn CatalogCacheFlushCatalog(catId: Oid);
     pub fn CatCacheInvalidate(cache: *mut CatCache, hashValue: uint32);
     pub fn PrepareToInvalidateCacheTuple(
@@ -52106,7 +50049,7 @@ extern "C" {
         tuple: HeapTuple,
         newtuple: HeapTuple,
         function: ::core::option::Option<
-            unsafe extern "C" fn(arg1: ::core::ffi::c_int, arg2: uint32, arg3: Oid),
+            unsafe extern "C-unwind" fn(arg1: ::core::ffi::c_int, arg2: uint32, arg3: Oid),
         >,
     );
     pub fn InitCatalogCache();
@@ -52134,6 +50077,7 @@ extern "C" {
         key4: Datum,
     ) -> HeapTuple;
     pub fn ReleaseSysCache(tuple: HeapTuple);
+    pub fn SearchSysCacheLocked1(cacheId: ::core::ffi::c_int, key1: Datum) -> HeapTuple;
     pub fn SearchSysCacheCopy(
         cacheId: ::core::ffi::c_int,
         key1: Datum,
@@ -52141,6 +50085,7 @@ extern "C" {
         key3: Datum,
         key4: Datum,
     ) -> HeapTuple;
+    pub fn SearchSysCacheLockedCopy1(cacheId: ::core::ffi::c_int, key1: Datum) -> HeapTuple;
     pub fn SearchSysCacheExists(
         cacheId: ::core::ffi::c_int,
         key1: Datum,
@@ -57312,6 +55257,14 @@ pub const XmlExprOp_IS_DOCUMENT: u32 = 7;
 pub const XmlOptionType_XMLOPTION_DOCUMENT: u32 = 0;
 #[deprecated(since = "0.12.0", note = "you want pg_sys::XmlOptionType::XMLOPTION_CONTENT")]
 pub const XmlOptionType_XMLOPTION_CONTENT: u32 = 1;
+#[deprecated(since = "0.12.0", note = "you want pg_sys::__pid_type::F_OWNER_TID")]
+pub const __pid_type_F_OWNER_TID: u32 = 0;
+#[deprecated(since = "0.12.0", note = "you want pg_sys::__pid_type::F_OWNER_PID")]
+pub const __pid_type_F_OWNER_PID: u32 = 1;
+#[deprecated(since = "0.12.0", note = "you want pg_sys::__pid_type::F_OWNER_PGRP")]
+pub const __pid_type_F_OWNER_PGRP: u32 = 2;
+#[deprecated(since = "0.12.0", note = "you want pg_sys::__pid_type::F_OWNER_GID")]
+pub const __pid_type_F_OWNER_GID: u32 = 2;
 #[deprecated(since = "0.12.0", note = "you want pg_sys::__socket_type::SOCK_STREAM")]
 pub const __socket_type_SOCK_STREAM: u32 = 1;
 #[deprecated(since = "0.12.0", note = "you want pg_sys::__socket_type::SOCK_DGRAM")]

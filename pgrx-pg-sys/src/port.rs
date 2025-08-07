@@ -1,4 +1,5 @@
 use crate as pg_sys;
+use crate::BLCKSZ;
 use core::mem::offset_of;
 use core::str::FromStr;
 
@@ -10,13 +11,13 @@ pub const MaxOffsetNumber: super::OffsetNumber =
     (super::BLCKSZ as usize / std::mem::size_of::<super::ItemIdData>()) as super::OffsetNumber;
 pub const InvalidBlockNumber: u32 = 0xFFFF_FFFF as crate::BlockNumber;
 pub const VARHDRSZ: usize = std::mem::size_of::<super::int32>();
-pub const InvalidTransactionId: super::TransactionId = 0 as super::TransactionId;
 pub const InvalidCommandId: super::CommandId = (!(0 as super::CommandId)) as super::CommandId;
 pub const FirstCommandId: super::CommandId = 0 as super::CommandId;
-pub const BootstrapTransactionId: super::TransactionId = 1 as super::TransactionId;
-pub const FrozenTransactionId: super::TransactionId = 2 as super::TransactionId;
-pub const FirstNormalTransactionId: super::TransactionId = 3 as super::TransactionId;
-pub const MaxTransactionId: super::TransactionId = 0xFFFF_FFFF as super::TransactionId;
+pub const InvalidTransactionId: crate::TransactionId = crate::TransactionId::INVALID;
+pub const BootstrapTransactionId: crate::TransactionId = crate::TransactionId::BOOTSTRAP;
+pub const FrozenTransactionId: crate::TransactionId = crate::TransactionId::FROZEN;
+pub const FirstNormalTransactionId: crate::TransactionId = crate::TransactionId::FIRST_NORMAL;
+pub const MaxTransactionId: crate::TransactionId = crate::TransactionId::MAX;
 
 /// Given a valid HeapTuple pointer, return address of the user data
 ///
@@ -74,7 +75,7 @@ pub const unsafe fn MAXALIGN(len: usize) -> usize {
 /// [`palloc`]: crate::palloc
 #[allow(non_snake_case)]
 pub unsafe fn GetMemoryChunkContext(pointer: *mut std::os::raw::c_void) -> pg_sys::MemoryContext {
-    #[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
+    #[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
     {
         // Postgres versions <16 don't export the "GetMemoryChunkContext" function.  It's a "static inline"
         // function in `memutils.h`, so we port it to Rust right here
@@ -103,10 +104,10 @@ pub unsafe fn GetMemoryChunkContext(pointer: *mut std::os::raw::c_void) -> pg_sy
 
         context
     }
-    #[cfg(any(feature = "pg16", feature = "pg17"))]
+    #[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
     {
         #[pgrx_macros::pg_guard]
-        extern "C" {
+        unsafe extern "C-unwind" {
             #[link_name = "GetMemoryChunkContext"]
             pub fn extern_fn(pointer: *mut std::os::raw::c_void) -> pg_sys::MemoryContext;
         }
@@ -156,9 +157,107 @@ pub fn get_pg_major_version_num() -> u16 {
     u16::from_str(super::get_pg_major_version_string()).unwrap()
 }
 
+#[cfg(any(not(target_env = "msvc"), feature = "pg17", feature = "pg18"))]
 #[inline]
 pub fn get_pg_version_string() -> &'static str {
     super::PG_VERSION_STR.to_str().unwrap()
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    any(feature = "pg13", feature = "pg14", feature = "pg15", feature = "pg16")
+))]
+#[inline]
+pub fn get_pg_version_string() -> &'static str {
+    // bindgen cannot get value of PG_VERSION_STR
+    // PostgreSQL @0@ on @1@-@2@, compiled by @3@-@4@, @5@-bit
+    static PG_VERSION_STR: [u8; 256] = const {
+        let major = super::PG_MAJORVERSION_NUM;
+        let minor = super::PG_MINORVERSION_NUM;
+        #[cfg(target_pointer_width = "32")]
+        let pointer_width = 32_u32;
+        #[cfg(target_pointer_width = "64")]
+        let pointer_width = 64_u32;
+        // a fake value
+        let msc_ver = b"1700";
+        let mut buffer = [0u8; 256];
+        let mut pointer = 0;
+        {
+            let s = b"PostgreSQL ";
+            let mut i = 0;
+            while i < s.len() {
+                buffer[pointer + i] = s[i];
+                i += 1;
+            }
+            pointer += s.len();
+        }
+        {
+            buffer[pointer + 0] = b'0' + (major / 10) as u8;
+            buffer[pointer + 1] = b'0' + (major % 10) as u8;
+            pointer += 2;
+        }
+        {
+            let s = b".";
+            let mut i = 0;
+            while i < s.len() {
+                buffer[pointer + i] = s[i];
+                i += 1;
+            }
+            pointer += s.len();
+        }
+        if minor < 10 {
+            buffer[pointer + 0] = b'0' + (minor % 10) as u8;
+            pointer += 1;
+        } else {
+            buffer[pointer + 0] = b'0' + (minor / 10) as u8;
+            buffer[pointer + 1] = b'0' + (minor % 10) as u8;
+            pointer += 2;
+        }
+        {
+            let s = b", compiled by Visual C++ build ";
+            let mut i = 0;
+            while i < s.len() {
+                buffer[pointer + i] = s[i];
+                i += 1;
+            }
+            pointer += s.len();
+        }
+        {
+            let s = msc_ver;
+            let mut i = 0;
+            while i < s.len() {
+                buffer[pointer + i] = s[i];
+                i += 1;
+            }
+            pointer += s.len();
+        }
+        {
+            let s = b", ";
+            let mut i = 0;
+            while i < s.len() {
+                buffer[pointer + i] = s[i];
+                i += 1;
+            }
+            pointer += s.len();
+        }
+        {
+            buffer[pointer + 0] = b'0' + (pointer_width / 10) as u8;
+            buffer[pointer + 1] = b'0' + (pointer_width % 10) as u8;
+            pointer += 2;
+        }
+        {
+            let s = b"-bit";
+            let mut i = 0;
+            while i < s.len() {
+                buffer[pointer + i] = s[i];
+                i += 1;
+            }
+            pointer += s.len();
+        }
+        buffer[pointer] = 0;
+        buffer
+    };
+    unsafe { std::ffi::CStr::from_ptr(PG_VERSION_STR.as_ptr().cast()).to_str().unwrap() }
 }
 
 #[inline]
@@ -240,13 +339,13 @@ pub unsafe fn heap_tuple_get_struct<T>(htup: super::HeapTuple) -> *mut T {
 //
 // As a result, we redeclare their functions with the arguments they should have on earlier Postgres
 // and we route people to the old symbols they were using before on later ones.
-#[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
 #[::pgrx_macros::pg_guard]
-extern "C" {
+extern "C-unwind" {
     pub fn planstate_tree_walker(
         planstate: *mut super::PlanState,
         walker: ::core::option::Option<
-            unsafe extern "C" fn(*mut super::PlanState, *mut ::core::ffi::c_void) -> bool,
+            unsafe extern "C-unwind" fn(*mut super::PlanState, *mut ::core::ffi::c_void) -> bool,
         >,
         context: *mut ::core::ffi::c_void,
     ) -> bool;
@@ -254,7 +353,7 @@ extern "C" {
     pub fn query_tree_walker(
         query: *mut super::Query,
         walker: ::core::option::Option<
-            unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+            unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
         >,
         context: *mut ::core::ffi::c_void,
         flags: ::core::ffi::c_int,
@@ -263,7 +362,7 @@ extern "C" {
     pub fn query_or_expression_tree_walker(
         node: *mut super::Node,
         walker: ::core::option::Option<
-            unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+            unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
         >,
         context: *mut ::core::ffi::c_void,
         flags: ::core::ffi::c_int,
@@ -272,7 +371,7 @@ extern "C" {
     pub fn range_table_entry_walker(
         rte: *mut super::RangeTblEntry,
         walker: ::core::option::Option<
-            unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+            unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
         >,
         context: *mut ::core::ffi::c_void,
         flags: ::core::ffi::c_int,
@@ -281,7 +380,7 @@ extern "C" {
     pub fn range_table_walker(
         rtable: *mut super::List,
         walker: ::core::option::Option<
-            unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+            unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
         >,
         context: *mut ::core::ffi::c_void,
         flags: ::core::ffi::c_int,
@@ -290,7 +389,7 @@ extern "C" {
     pub fn expression_tree_walker(
         node: *mut super::Node,
         walker: ::core::option::Option<
-            unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+            unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
         >,
         context: *mut ::core::ffi::c_void,
     ) -> bool;
@@ -298,28 +397,28 @@ extern "C" {
     pub fn raw_expression_tree_walker(
         node: *mut super::Node,
         walker: ::core::option::Option<
-            unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+            unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
         >,
         context: *mut ::core::ffi::c_void,
     ) -> bool;
 }
 
-#[cfg(any(feature = "pg16", feature = "pg17"))]
+#[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
 pub unsafe fn planstate_tree_walker(
     planstate: *mut super::PlanState,
     walker: ::core::option::Option<
-        unsafe extern "C" fn(*mut super::PlanState, *mut ::core::ffi::c_void) -> bool,
+        unsafe extern "C-unwind" fn(*mut super::PlanState, *mut ::core::ffi::c_void) -> bool,
     >,
     context: *mut ::core::ffi::c_void,
 ) -> bool {
     crate::planstate_tree_walker_impl(planstate, walker, context)
 }
 
-#[cfg(any(feature = "pg16", feature = "pg17"))]
+#[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
 pub unsafe fn query_tree_walker(
     query: *mut super::Query,
     walker: ::core::option::Option<
-        unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+        unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
     >,
     context: *mut ::core::ffi::c_void,
     flags: ::core::ffi::c_int,
@@ -327,11 +426,11 @@ pub unsafe fn query_tree_walker(
     crate::query_tree_walker_impl(query, walker, context, flags)
 }
 
-#[cfg(any(feature = "pg16", feature = "pg17"))]
+#[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
 pub unsafe fn query_or_expression_tree_walker(
     node: *mut super::Node,
     walker: ::core::option::Option<
-        unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+        unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
     >,
     context: *mut ::core::ffi::c_void,
     flags: ::core::ffi::c_int,
@@ -339,20 +438,20 @@ pub unsafe fn query_or_expression_tree_walker(
     crate::query_or_expression_tree_walker_impl(node, walker, context, flags)
 }
 
-#[cfg(any(feature = "pg16", feature = "pg17"))]
+#[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
 pub unsafe fn expression_tree_walker(
     node: *mut crate::Node,
-    walker: Option<unsafe extern "C" fn(*mut crate::Node, *mut ::core::ffi::c_void) -> bool>,
+    walker: Option<unsafe extern "C-unwind" fn(*mut crate::Node, *mut ::core::ffi::c_void) -> bool>,
     context: *mut ::core::ffi::c_void,
 ) -> bool {
     crate::expression_tree_walker_impl(node, walker, context)
 }
 
-#[cfg(any(feature = "pg16", feature = "pg17"))]
+#[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
 pub unsafe fn range_table_entry_walker(
     rte: *mut super::RangeTblEntry,
     walker: ::core::option::Option<
-        unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+        unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
     >,
     context: *mut ::core::ffi::c_void,
     flags: ::core::ffi::c_int,
@@ -360,11 +459,11 @@ pub unsafe fn range_table_entry_walker(
     crate::range_table_entry_walker_impl(rte, walker, context, flags)
 }
 
-#[cfg(any(feature = "pg16", feature = "pg17"))]
+#[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
 pub unsafe fn range_table_walker(
     rtable: *mut super::List,
     walker: ::core::option::Option<
-        unsafe extern "C" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
+        unsafe extern "C-unwind" fn(*mut super::Node, *mut ::core::ffi::c_void) -> bool,
     >,
     context: *mut ::core::ffi::c_void,
     flags: ::core::ffi::c_int,
@@ -372,13 +471,22 @@ pub unsafe fn range_table_walker(
     crate::range_table_walker_impl(rtable, walker, context, flags)
 }
 
-#[cfg(any(feature = "pg16", feature = "pg17"))]
+#[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
 pub unsafe fn raw_expression_tree_walker(
     node: *mut crate::Node,
-    walker: Option<unsafe extern "C" fn(*mut crate::Node, *mut ::core::ffi::c_void) -> bool>,
+    walker: Option<unsafe extern "C-unwind" fn(*mut crate::Node, *mut ::core::ffi::c_void) -> bool>,
     context: *mut ::core::ffi::c_void,
 ) -> bool {
     crate::raw_expression_tree_walker_impl(node, walker, context)
+}
+
+#[cfg(feature = "pg18")]
+pub unsafe fn expression_tree_mutator(
+    node: *mut crate::Node,
+    mutator: crate::tree_mutator_callback,
+    context: *mut ::core::ffi::c_void,
+) -> *mut crate::Node {
+    crate::expression_tree_mutator_impl(node, mutator, context)
 }
 
 #[inline(always)]
@@ -389,4 +497,217 @@ pub unsafe fn MemoryContextSwitchTo(context: crate::MemoryContext) -> crate::Mem
     old
 }
 
-pub use crate::PGERROR as ERROR;
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn BufferGetPageSize(buffer: pg_sys::Buffer) -> pg_sys::Size {
+    // #define BufferGetPageSize(buffer) \
+    // ( \
+    //     AssertMacro(BufferIsValid(buffer)), \
+    //     (Size)BLCKSZ \
+    // )
+    assert!(BufferIsValid(buffer));
+    pg_sys::BLCKSZ as pg_sys::Size
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn ItemIdGetOffset(item_id: pg_sys::ItemId) -> u32 {
+    // #define ItemIdGetOffset(itemId) \
+    // ((itemId)->lp_off)
+    (*item_id).lp_off()
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+pub const unsafe fn PageIsValid(page: pg_sys::Page) -> bool {
+    // #define PageIsValid(page) PointerIsValid(page)
+    !page.is_null()
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageIsEmpty(page: pg_sys::Page) -> bool {
+    // #define PageIsEmpty(page) \
+    // (((PageHeader) (page))->pd_lower <= SizeOfPageHeaderData)
+    const SizeOfPageHeaderData: pg_sys::Size =
+        core::mem::offset_of!(pg_sys::PageHeaderData, pd_linp);
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    (*page_header).pd_lower <= SizeOfPageHeaderData as u16
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageIsNew(page: pg_sys::Page) -> bool {
+    // #define PageIsNew(page) (((PageHeader) (page))->pd_upper == 0)
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    (*page_header).pd_upper == 0
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageGetItemId(page: pg_sys::Page, offset: pg_sys::OffsetNumber) -> pg_sys::ItemId {
+    // #define PageGetItemId(page, offsetNumber) \
+    // ((ItemId) (&((PageHeader) (page))->pd_linp[(offsetNumber) - 1]))
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    (*page_header).pd_linp.as_mut_ptr().add(offset as usize - 1)
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageGetContents(page: pg_sys::Page) -> *mut ::core::ffi::c_char {
+    // #define PageGetContents(page) \
+    // ((char *) (page) + MAXALIGN(SizeOfPageHeaderData))
+    const SizeOfPageHeaderData: pg_sys::Size =
+        core::mem::offset_of!(pg_sys::PageHeaderData, pd_linp);
+    page.add(pg_sys::MAXALIGN(SizeOfPageHeaderData)) as *mut ::core::ffi::c_char
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub fn PageSizeIsValid(page_size: usize) -> bool {
+    // #define PageSizeIsValid(pageSize) ((pageSize) == BLCKSZ)
+    page_size == pg_sys::BLCKSZ as usize
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageGetPageSize(page: pg_sys::Page) -> usize {
+    // #define PageGetPageSize(page) \
+    // ((Size) (((PageHeader) (page))->pd_pagesize_version & (uint16) 0xFF00))
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    ((*page_header).pd_pagesize_version & 0xFF00) as usize
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageGetPageLayoutVersion(page: pg_sys::Page) -> ::core::ffi::c_char {
+    // #define PageGetPageLayoutVersion(page) \
+    // (((PageHeader) (page))->pd_pagesize_version & 0x00FF)
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    ((*page_header).pd_pagesize_version & 0x00FF) as ::core::ffi::c_char
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageSetPageSizeAndVersion(page: pg_sys::Page, size: u16, version: u8) {
+    // #define PageSetPageSizeAndVersion(page, size, version) \
+    // ((PageHeader) (page))->pd_pagesize_version = (size) | (version)
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    (*page_header).pd_pagesize_version = size | (version as u16);
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageGetSpecialSize(page: pg_sys::Page) -> u16 {
+    // #define PageGetSpecialSize(page) \
+    // ((uint16) (PageGetPageSize(page) - ((PageHeader)(page))->pd_special))
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    PageGetPageSize(page) as u16 - (*page_header).pd_special
+}
+
+/// line pointer(s) do not count as part of header
+pub const unsafe fn SizeOfPageHeaderData() -> usize {
+    /*
+       #define SizeOfPageHeaderData (offsetof(PageHeaderData, pd_linp))
+    */
+    offset_of!(pg_sys::PageHeaderData, pd_linp)
+}
+
+/// Using assertions, validate that the page special pointer is OK.
+///
+/// This is intended to catch use of the pointer before page initialization.
+/// It is implemented as a function due to the limitations of the MSVC
+/// compiler, which choked on doing all these tests within another macro.  We
+/// return true so that AssertMacro() can be used while still getting the
+/// specifics from the macro failure within this function.
+#[allow(non_snake_case)]
+#[inline(always)]
+pub const unsafe fn PageValidateSpecialPointer(page: pg_sys::Page) -> bool {
+    // static inline bool
+    // PageValidateSpecialPointer(Page page)
+    // {
+    //     Assert(PageIsValid(page));
+    //     Assert(((PageHeader) (page))->pd_special <= BLCKSZ);
+    //     Assert(((PageHeader) (page))->pd_special >= SizeOfPageHeaderData);
+    //
+    //     return true;
+    // }
+    assert!(PageIsValid(page));
+    let page = page as *mut pg_sys::PageHeaderData;
+    assert!((*page).pd_special <= BLCKSZ as _);
+    assert!((*page).pd_special >= SizeOfPageHeaderData() as _);
+    true
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15", feature = "pg18"))]
+pub unsafe fn PageGetSpecialPointer(page: pg_sys::Page) -> *mut ::core::ffi::c_char {
+    /*
+    #define PageGetSpecialPointer(page) \
+    ( \
+        PageValidateSpecialPointer(page), \
+        ((page) + ((PageHeader) (page))->pd_special) \
+    )
+    */
+
+    assert!(PageValidateSpecialPointer(page));
+
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    page.add((*page_header).pd_special as usize) as *mut ::core::ffi::c_char
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageGetItem(page: pg_sys::Page, item_id: pg_sys::ItemId) -> *mut ::core::ffi::c_char {
+    // #define PageGetItem(page, itemId) \
+    // (((char *)(page)) + ItemIdGetOffset(itemId))
+    page.add(ItemIdGetOffset(item_id) as usize)
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn PageGetMaxOffsetNumber(page: pg_sys::Page) -> pg_sys::OffsetNumber {
+    // #define PageGetMaxOffsetNumber(page) \
+    // (((PageHeader) (page))->pd_lower <= SizeOfPageHeaderData ? 0 : \
+    // ((((PageHeader) (page))->pd_lower - SizeOfPageHeaderData) / sizeof(ItemIdData)))
+    const SizeOfPageHeaderData: pg_sys::Size =
+        core::mem::offset_of!(pg_sys::PageHeaderData, pd_linp);
+    let page_header = page as *mut pg_sys::PageHeaderData;
+    if (*page_header).pd_lower <= SizeOfPageHeaderData as u16 {
+        0
+    } else {
+        ((*page_header).pd_lower - SizeOfPageHeaderData as u16)
+            / std::mem::size_of::<pg_sys::ItemIdData>() as u16
+    }
+}
+
+#[allow(non_snake_case)]
+#[inline(always)]
+#[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
+pub unsafe fn BufferIsValid(buffer: pg_sys::Buffer) -> bool {
+    // static inline bool
+    // BufferIsValid(Buffer bufnum)
+    // {
+    //     Assert(bufnum <= NBuffers);
+    //     Assert(bufnum >= -NLocBuffer);
+
+    //     return bufnum != InvalidBuffer;
+    // }
+    assert!(buffer <= pg_sys::NBuffers);
+    assert!(buffer >= -pg_sys::NLocBuffer);
+    buffer != pg_sys::InvalidBuffer as pg_sys::Buffer
+}

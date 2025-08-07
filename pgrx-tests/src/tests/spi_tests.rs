@@ -17,8 +17,7 @@ mod tests {
     use std::error::Error;
 
     use pgrx::prelude::*;
-    use pgrx::spi;
-    use pgrx::spi::Query;
+    use pgrx::spi::{self, Query};
 
     #[pg_test(error = "syntax error at or near \"THIS\"")]
     fn test_spi_failure() -> Result<(), spi::Error> {
@@ -129,8 +128,8 @@ mod tests {
 
     #[pg_test]
     fn test_spi_run_with_args() {
-        let i = 1 as i32;
-        let j = 2 as i64;
+        let i = 1_i32;
+        let j = 2_i64;
 
         assert!(Spi::run_with_args("SELECT $1 + $2 = 3", &[i.into(), j.into(),],).is_ok());
     }
@@ -144,8 +143,8 @@ mod tests {
 
     #[pg_test]
     fn test_spi_explain_with_args() -> Result<(), pgrx::spi::Error> {
-        let i = 1 as i32;
-        let j = 2 as i64;
+        let i = 1_i32;
+        let j = 2_i64;
 
         let result = Spi::explain_with_args("SELECT $1 + $2 = 3", &[i.into(), j.into()])?;
 
@@ -165,7 +164,7 @@ mod tests {
 
     #[pg_test]
     fn test_inserting_null() -> Result<(), pgrx::spi::Error> {
-        Spi::connect(|mut client| {
+        Spi::connect_mut(|client| {
             client.update("CREATE TABLE tests.null_test (id uuid)", None, &[]).map(|_| ())
         })?;
         assert_eq!(
@@ -188,7 +187,7 @@ mod tests {
 
     #[pg_test]
     fn test_cursor() -> Result<(), spi::Error> {
-        Spi::connect(|mut client| {
+        Spi::connect_mut(|client| {
             client.update("CREATE TABLE tests.cursor_table (id int)", None, &[])?;
             client.update(
                 "INSERT INTO tests.cursor_table (id) \
@@ -208,7 +207,7 @@ mod tests {
 
     #[pg_test]
     fn test_cursor_prepared_statement() -> Result<(), pgrx::spi::Error> {
-        Spi::connect(|mut client| {
+        Spi::connect_mut(|client| {
             client.update("CREATE TABLE tests.cursor_table (id int)", None, &[])?;
             client.update(
                 "INSERT INTO tests.cursor_table (id) \
@@ -245,7 +244,7 @@ mod tests {
     fn test_cursor_prepared_statement_panics_impl(
         args: &[DatumWithOid],
     ) -> Result<(), pgrx::spi::Error> {
-        Spi::connect(|mut client| {
+        Spi::connect_mut(|client| {
             client.update("CREATE TABLE tests.cursor_table (id int)", None, &[])?;
             client.update(
                 "INSERT INTO tests.cursor_table (id) \
@@ -253,10 +252,8 @@ mod tests {
                 None,
                 &[],
             )?;
-            let prepared = client.prepare(
-                "SELECT * FROM tests.cursor_table WHERE id = $1",
-                &[PgBuiltInOids::INT4OID.oid()],
-            )?;
+            let prepared =
+                client.prepare("SELECT * FROM tests.cursor_table WHERE id = $1", &oids_of![i32])?;
             client.open_cursor(&prepared, args);
             unreachable!();
         })
@@ -264,7 +261,7 @@ mod tests {
 
     #[pg_test]
     fn test_cursor_by_name() -> Result<(), pgrx::spi::Error> {
-        let cursor_name = Spi::connect(|mut client| {
+        let cursor_name = Spi::connect_mut(|client| {
             client.update("CREATE TABLE tests.cursor_table (id int)", None, &[])?;
             client.update(
                 "INSERT INTO tests.cursor_table (id) \
@@ -318,7 +315,7 @@ mod tests {
             Ok::<_, spi::Error>(())
         })?;
 
-        Spi::connect(|mut client| {
+        Spi::connect_mut(|client| {
             let res = client.update("SET TIME ZONE 'PST8PDT'", None, &[])?;
 
             assert_eq!(Err(spi::Error::NoTupleTable), res.columns());
@@ -334,9 +331,8 @@ mod tests {
 
     #[pg_test]
     fn test_spi_non_mut() -> Result<(), pgrx::spi::Error> {
-        // Ensures update and cursor APIs do not need mutable reference to SpiClient
-        Spi::connect(|mut client| {
-            client.update("SELECT 1", None, &[]).expect("SPI failed");
+        // Ensures cursor APIs do not need mutable reference to SpiClient
+        Spi::connect(|client| {
             let cursor = client.open_cursor("SELECT 1", &[]).detach_into_name();
             client.find_cursor(&cursor).map(|_| ())
         })
@@ -376,8 +372,7 @@ mod tests {
     #[pg_test]
     fn test_prepared_statement() -> Result<(), spi::Error> {
         let rc = Spi::connect(|client| {
-            let prepared =
-                client.prepare("SELECT $1", &[PgOid::BuiltIn(PgBuiltInOids::INT4OID)])?;
+            let prepared = client.prepare("SELECT $1", &oids_of![i32])?;
             client.select(&prepared, None, &[42.into()])?.first().get::<i32>(1)
         })?;
 
@@ -388,8 +383,7 @@ mod tests {
     #[pg_test]
     fn test_prepared_statement_argument_mismatch() {
         let err = Spi::connect(|client| {
-            let prepared =
-                client.prepare("SELECT $1", &[PgOid::BuiltIn(PgBuiltInOids::INT4OID)])?;
+            let prepared = client.prepare("SELECT $1", &oids_of![i32])?;
             client.select(&prepared, None, &[]).map(|_| ())
         })
         .unwrap_err();
@@ -403,9 +397,7 @@ mod tests {
     #[pg_test]
     fn test_owned_prepared_statement() -> Result<(), spi::Error> {
         let prepared = Spi::connect(|client| {
-            Ok::<_, spi::Error>(
-                client.prepare("SELECT $1", &[PgOid::BuiltIn(PgBuiltInOids::INT4OID)])?.keep(),
-            )
+            Ok::<_, spi::Error>(client.prepare("SELECT $1", &oids_of![i32])?.keep())
         })?;
         let rc = Spi::connect(|client| {
             client.select(&prepared, None, &[42.into()])?.first().get::<i32>(1)
@@ -428,7 +420,7 @@ mod tests {
 
     #[pg_test]
     fn test_readwrite_in_select_readwrite() -> Result<(), spi::Error> {
-        Spi::connect(|mut client| {
+        Spi::connect_mut(|client| {
             // This is supposed to switch connection to read-write and run it there
             client.update("CREATE TABLE a (id INT)", None, &[])?;
             // This is supposed to run in read-write
@@ -442,7 +434,7 @@ mod tests {
         Spi::connect(|client| {
             let stmt = client.prepare("CREATE TABLE a ()", &[])?;
             // This is supposed to run in read-only
-            stmt.execute(&client, Some(1), &[])?;
+            stmt.execute(client, Some(1), &[])?;
             Ok(())
         })
     }
@@ -452,14 +444,14 @@ mod tests {
         Spi::connect(|client| {
             let stmt = client.prepare_mut("CREATE TABLE a ()", &[])?;
             // This is supposed to run in read-write
-            stmt.execute(&client, Some(1), &[])?;
+            stmt.execute(client, Some(1), &[])?;
             Ok(())
         })
     }
 
     #[pg_test]
     fn test_spi_select_sees_update() -> spi::Result<()> {
-        let with_select = Spi::connect(|mut client| {
+        let with_select = Spi::connect_mut(|client| {
             client.update("CREATE TABLE asd(id int)", None, &[])?;
             client.update("INSERT INTO asd(id) VALUES (1)", None, &[])?;
             client.select("SELECT COUNT(*) FROM asd", None, &[])?.first().get_one::<i64>()
@@ -485,7 +477,7 @@ mod tests {
 
     #[pg_test]
     fn test_spi_select_sees_update_in_other_session() -> spi::Result<()> {
-        Spi::connect::<spi::Result<()>, _>(|mut client| {
+        Spi::connect_mut::<spi::Result<()>, _>(|client| {
             client.update("CREATE TABLE asd(id int)", None, &[])?;
             client.update("INSERT INTO asd(id) VALUES (1)", None, &[])?;
             Ok(())

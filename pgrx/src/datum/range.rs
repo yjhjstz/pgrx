@@ -394,11 +394,11 @@ where
             lower_bound.lower = true;
 
             // PG will serialize these lower/upper RangeBounds to a *RangeType ptr/datum
-            #[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
+            #[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15"))]
             let range_type =
                 pg_sys::make_range(typecache, &mut lower_bound, &mut upper_bound, is_empty);
 
-            #[cfg(any(feature = "pg16", feature = "pg17"))]
+            #[cfg(any(feature = "pg16", feature = "pg17", feature = "pg18"))]
             let range_type = pg_sys::make_range(
                 typecache,
                 &mut lower_bound,

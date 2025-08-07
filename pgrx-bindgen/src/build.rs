@@ -24,7 +24,7 @@ use std::process::{Command, Output};
 use std::rc::Rc;
 use syn::{Item, ItemConst};
 
-const BLOCKLISTED_TYPES: [&str; 3] = ["Datum", "NullableDatum", "Oid"];
+const BLOCKLISTED_TYPES: [&str; 4] = ["Datum", "NullableDatum", "Oid", "TransactionId"];
 
 // These postgres versions were effectively "yanked" by the community, even tho they still exist
 // in the wild.  pgrx will refuse to compile against them
@@ -37,7 +37,6 @@ const YANKED_POSTGRES_VERSIONS: &[PgVersion] = &[
     PgVersion::new(15, PgMinorVersion::Release(9), None),
     PgVersion::new(14, PgMinorVersion::Release(14), None),
     PgVersion::new(13, PgMinorVersion::Release(17), None),
-    PgVersion::new(12, PgMinorVersion::Release(21), None),
 ];
 
 pub(super) mod clang;
@@ -126,15 +125,15 @@ impl bindgen::callbacks::ParseCallbacks for BindingOverride {
     ) -> Option<bindgen::callbacks::EnumVariantCustomBehavior> {
         enum_name.inspect(|name| match name.strip_prefix("enum").unwrap_or(name).trim() {
             // specifically overridden enum
-            "NodeTag" => return,
-            name if name.contains("unnamed at") || name.contains("anonymous at") => return,
+            "NodeTag" => (),
+            name if name.contains("unnamed at") || name.contains("anonymous at") => (),
             // to prevent problems with BuiltinOid
-            _ if variant_name.contains("OID") => return,
+            _ if variant_name.contains("OID") => (),
             name => self
                 .enum_names
                 .borrow_mut()
                 .entry(name.to_string())
-                .or_insert(Vec::new())
+                .or_default()
                 .push((variant_name.to_string(), variant_value)),
         });
         None
@@ -162,7 +161,6 @@ pub fn main() -> eyre::Result<()> {
     }
 
     let compile_cshim = env_tracked("CARGO_FEATURE_CSHIM").as_deref() == Some("1");
-
     let is_for_release =
         env_tracked("PGRX_PG_SYS_GENERATE_BINDINGS_FOR_RELEASE").as_deref() == Some("1");
 
@@ -331,7 +329,7 @@ fn generate_bindings(
         .wrap_err_with(|| format!("bindgen failed for pg{major_version}"))?;
 
     let oids = extract_oids(&bindgen_output);
-    let rewritten_items = rewrite_items(&bindgen_output, &oids)
+    let rewritten_items = rewrite_items(bindgen_output, &oids)
         .wrap_err_with(|| format!("failed to rewrite items for pg{major_version}"))?;
     let oids = format_builtin_oid_impl(oids);
 
@@ -348,7 +346,7 @@ fn generate_bindings(
             &bindings_file,
             quote! {
                 use crate as pg_sys;
-                use crate::{Datum, Oid, PgNode};
+                use crate::{Datum, MultiXactId, Oid, PgNode, TransactionId};
             },
             is_for_release,
         )
@@ -438,9 +436,10 @@ fn write_rs_file(
 /// Given a token stream representing a file, apply a series of transformations to munge
 /// the bindgen generated code with some postgres specific enhancements
 fn rewrite_items(
-    file: &syn::File,
+    mut file: syn::File,
     oids: &BTreeMap<syn::Ident, Box<syn::Expr>>,
 ) -> eyre::Result<proc_macro2::TokenStream> {
+    rewrite_c_abi_to_c_unwind(&mut file);
     let items_vec = rewrite_oid_consts(&file.items, oids);
     let mut items = apply_pg_guard(&items_vec)?;
     let pgnode_impls = impl_pg_node(&items_vec)?;
@@ -794,13 +793,12 @@ fn run_bindgen(
     let configure = pg_config.configure()?;
     let preferred_clang: Option<&std::path::Path> = configure.get("CLANG").map(|s| s.as_ref());
     eprintln!("pg_config --configure CLANG = {preferred_clang:?}");
+    let pg_target_includes = pg_target_includes(major_version, pg_config)?;
+    eprintln!("pg_target_includes = {pg_target_includes:?}");
     let (autodetect, includes) = clang::detect_include_paths_for(preferred_clang);
     let mut binder = bindgen::Builder::default();
     binder = add_blocklists(binder);
-    binder = binder
-        .allowlist_file(format!("{}.*", pg_target_include(major_version, pg_config)?))
-        .allowlist_item("PGERROR")
-        .allowlist_item("SIG.*");
+    binder = add_allowlists(binder, pg_target_includes.iter().map(|x| x.as_str()));
     binder = add_derives(binder);
     if !autodetect {
         let builtin_includes = includes.iter().filter_map(|p| Some(format!("-I{}", p.to_str()?)));
@@ -812,7 +810,7 @@ fn run_bindgen(
     let bindings = binder
         .header(include_h.display().to_string())
         .clang_args(extra_bindgen_clang_args(pg_config)?)
-        .clang_arg(format!("-I{}", pg_target_include(major_version, pg_config)?))
+        .clang_args(pg_target_includes.iter().map(|x| format!("-I{x}")))
         .detect_include_paths(autodetect)
         .parse_callbacks(Box::new(overrides))
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
@@ -864,10 +862,12 @@ pub const {module}_{variant}: {ty} = {value};"#,
 fn add_blocklists(bind: bindgen::Builder) -> bindgen::Builder {
     bind.blocklist_type("Datum") // manually wrapping datum for correctness
         .blocklist_type("Oid") // "Oid" is not just any u32
+        .blocklist_type("TransactionId") // "TransactionId" is not just any u32
+        .blocklist_type("MultiXactId") // it's an alias of "TransactionId"
         .blocklist_var("CONFIGURE_ARGS") // configuration during build is hopefully irrelevant
         .blocklist_var("_*(?:HAVE|have)_.*") // header tracking metadata
         .blocklist_var("_[A-Z_]+_H") // more header metadata
-        // It's used by explict `extern "C"`
+        // It's used by explict `extern "C-unwind"`
         .blocklist_function("pg_re_throw")
         .blocklist_function("err(start|code|msg|detail|context_msg|hint|finish)")
         // These functions are already ported in Rust
@@ -896,8 +896,23 @@ fn add_blocklists(bind: bindgen::Builder) -> bindgen::Builder {
         .blocklist_function("raw_expression_tree_walker")
         .blocklist_function("type_is_array")
         .blocklist_function("varsize_any")
+        // we define these ourselves b/c Postgres is schizophrenic about them across versions
+        .blocklist_function("PageValidateSpecialPointer")
+        .blocklist_function("PageIsValid")
         // it's defined twice on Windows, so use PGERROR instead
         .blocklist_item("ERROR")
+        // it causes strange linker errors for PostgreSQL 14 on Windows
+        .blocklist_function("IsQueryIdEnabled")
+}
+
+fn add_allowlists<'a>(
+    mut bind: bindgen::Builder,
+    pg_target_includes: impl Iterator<Item = &'a str>,
+) -> bindgen::Builder {
+    for pg_target_include in pg_target_includes {
+        bind = bind.allowlist_file(format!("{}.*", regex::escape(pg_target_include)))
+    }
+    bind.allowlist_item("PGERROR").allowlist_item("SIG.*")
 }
 
 fn add_derives(bind: bindgen::Builder) -> bindgen::Builder {
@@ -947,23 +962,44 @@ fn target_env_tracked(s: &str) -> Option<String> {
     env_tracked(&format!("{s}_{target}")).or_else(|| env_tracked(s))
 }
 
-fn pg_target_include(pg_version: u16, pg_config: &PgConfig) -> eyre::Result<String> {
-    let var = "PGRX_INCLUDEDIR_SERVER";
+fn find_include(
+    pg_version: u16,
+    var: &str,
+    default: impl Fn() -> eyre::Result<PathBuf>,
+) -> eyre::Result<String> {
     let value =
         target_env_tracked(&format!("{var}_PG{pg_version}")).or_else(|| target_env_tracked(var));
     let path = match value {
         // No configured value: ask `pg_config`.
-        None => pg_config.includedir_server()?,
+        None => default()?,
         // Configured to non-empty string: pass to bindgen
         Some(overridden) => Path::new(&overridden).to_path_buf(),
     };
     let path = std::fs::canonicalize(&path)
         .wrap_err(format!("cannot find {path:?} for C header files"))?
         .join("") // returning a `/`-ending path
-        .to_str()
-        .ok_or(eyre!("{path:?} is not valid UTF-8 string"))?
+        .display()
         .to_string();
-    Ok(path)
+    if let Some(path) = path.strip_prefix("\\\\?\\") {
+        Ok(path.to_string())
+    } else {
+        Ok(path)
+    }
+}
+
+fn pg_target_includes(pg_version: u16, pg_config: &PgConfig) -> eyre::Result<Vec<String>> {
+    let mut result =
+        vec![find_include(pg_version, "PGRX_INCLUDEDIR_SERVER", || pg_config.includedir_server())?];
+    if let Some("msvc") = env_tracked("CARGO_CFG_TARGET_ENV").as_deref() {
+        result.push(find_include(pg_version, "PGRX_PKGINCLUDEDIR", || pg_config.pkgincludedir())?);
+        result.push(find_include(pg_version, "PGRX_INCLUDEDIR_SERVER_PORT_WIN32", || {
+            pg_config.includedir_server_port_win32()
+        })?);
+        result.push(find_include(pg_version, "PGRX_INCLUDEDIR_SERVER_PORT_WIN32_MSVC", || {
+            pg_config.includedir_server_port_win32_msvc()
+        })?);
+    }
+    Ok(result)
 }
 
 fn build_shim(
@@ -976,7 +1012,18 @@ fn build_shim(
     std::fs::copy(shim_src, shim_dst).unwrap();
 
     let mut build = cc::Build::new();
-    build.flag(&format!("-I{}", pg_target_include(major_version, pg_config)?));
+    let compiler = build.get_compiler();
+    if compiler.is_like_gnu() || compiler.is_like_clang() {
+        build.flag("-ffunction-sections");
+        build.flag("-fdata-sections");
+    }
+    if compiler.is_like_msvc() {
+        build.flag("/Gy");
+        build.flag("/Gw");
+    }
+    for pg_target_include in pg_target_includes(major_version, pg_config)?.iter() {
+        build.flag(format!("-I{pg_target_include}"));
+    }
     for flag in extra_bindgen_clang_args(pg_config)? {
         build.flag(&flag);
     }
@@ -987,24 +1034,24 @@ fn build_shim(
 
 fn extra_bindgen_clang_args(pg_config: &PgConfig) -> eyre::Result<Vec<String>> {
     let mut out = vec![];
-    if env_tracked("CARGO_CFG_TARGET_OS").as_deref() == Some("macos") {
-        // On macOS, find the `-isysroot` arg out of the c preprocessor flags,
-        // to handle the case where bindgen uses a libclang isn't provided by
-        // the system.
-        let flags = pg_config.cppflags()?;
-        // In practice this will always be valid UTF-8 because of how the
-        // `pgrx-pg-config` crate is implemented, but even if it were not, the
-        // problem won't be with flags we are interested in.
-        let flags = shlex::split(&flags.to_string_lossy()).unwrap_or_default();
+    let flags = shlex::split(&pg_config.cppflags()?.to_string_lossy()).unwrap_or_default();
+    if env_tracked("CARGO_CFG_TARGET_OS").as_deref() != Some("windows") {
         // Just give clang the full flag set, since presumably that's what we're
         // getting when we build the C shim anyway.
+        // Skip it on Windows, since clang is used to generate cshim but MSVC is
+        // used to compile PostgreSQL.
         out.extend(flags.iter().cloned());
-
+    }
+    if env_tracked("CARGO_CFG_TARGET_OS").as_deref() == Some("macos") {
         // Find the `-isysroot` flags so we can warn about them, so something
         // reasonable shows up if/when the build fails.
         //
-        // Eventually we should probably wrangle the sysroot for `cargo pgrx
-        // init`-installed PGs a bit more aggressively, but for now, whatever.
+        // TODO(thom): Could probably fix some brew/xcode issues here in the
+        // Find the `-isysroot` flags so we can warn about them, so something
+        // reasonable shows up if/when the build fails.
+        //
+        // - Handle homebrew packages initially linked against as keg-only, but
+        //   which have had their version bumped.
         for pair in flags.windows(2) {
             if pair[0] == "-isysroot" {
                 if !std::path::Path::new(&pair[1]).exists() {
@@ -1135,13 +1182,49 @@ fn apply_pg_guard(items: &Vec<syn::Item>) -> eyre::Result<proc_macro2::TokenStre
     Ok(out)
 }
 
+fn rewrite_c_abi_to_c_unwind(file: &mut syn::File) {
+    use proc_macro2::Span;
+    use syn::visit_mut::VisitMut;
+    use syn::LitStr;
+    pub struct Visitor {}
+    impl VisitMut for Visitor {
+        fn visit_abi_mut(&mut self, abi: &mut syn::Abi) {
+            if let Some(name) = &mut abi.name {
+                if name.value() == "C" {
+                    *name = LitStr::new("C-unwind", Span::call_site());
+                }
+            }
+        }
+    }
+    Visitor {}.visit_file_mut(file);
+}
+
 fn rust_fmt(path: &Path) -> eyre::Result<()> {
     // We shouldn't hit this path in a case where we care about it, but... just
     // in case we probably should respect RUSTFMT.
     let rustfmt = env_tracked("RUSTFMT").unwrap_or_else(|| "rustfmt".into());
-    let out = run_command(Command::new(rustfmt).arg(path).current_dir("."), "[bindings_diff]");
+    let mut command = Command::new(rustfmt);
+    command.arg(path).args(["--edition", "2021"]).current_dir(".");
+
+    let out = run_command(&mut command, "[bindings_diff]");
     match out {
-        Ok(_) => Ok(()),
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let rustfmt_output = format!(
+                r#"Problems running rustfmt: {command:?}:
+                {}
+                {}"#,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            for line in rustfmt_output.lines() {
+                println!("cargo:warning={line}");
+            }
+
+            // we won't fail the build because rustfmt failed
+            Ok(())
+        }
         Err(e)
             if e.downcast_ref::<std::io::Error>()
                 .ok_or(eyre!("Couldn't downcast error ref"))?

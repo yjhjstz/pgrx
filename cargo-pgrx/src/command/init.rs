@@ -14,7 +14,7 @@ use bzip2::bufread::BzDecoder;
 use eyre::{eyre, WrapErr};
 use owo_colors::OwoColorize;
 use pgrx_pg_config::{
-    get_c_locale_flags, prefix_path, ConfigToml, PgConfig, PgConfigSelector, Pgrx, PgrxHomeError,
+    get_c_locale_flags, ConfigToml, PgConfig, PgConfigSelector, Pgrx, PgrxHomeError,
 };
 use tar::Archive;
 
@@ -23,9 +23,10 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::OnceLock;
 
+#[cfg(not(target_os = "windows"))]
 static PROCESS_ENV_DENYLIST: &[&str] = &[
     "DEBUG",
     "MAKEFLAGS",
@@ -45,9 +46,6 @@ static PROCESS_ENV_DENYLIST: &[&str] = &[
 #[derive(clap::Args, Debug)]
 #[clap(author)]
 pub(crate) struct Init {
-    /// If installed locally, the path to PG12's `pgconfig` tool, or `download` to have pgrx download/compile/install it
-    #[clap(env = "PG12_PG_CONFIG", long)]
-    pg12: Option<String>,
     /// If installed locally, the path to PG13's `pgconfig` tool, or `download` to have pgrx download/compile/install it
     #[clap(env = "PG13_PG_CONFIG", long)]
     pg13: Option<String>,
@@ -63,6 +61,9 @@ pub(crate) struct Init {
     /// If installed locally, the path to PG17's `pgconfig` tool, or `download` to have pgrx download/compile/install it
     #[clap(env = "PG17_PG_CONFIG", long)]
     pg17: Option<String>,
+    /// If installed locally, the path to PG18's `pgconfig` tool, or `download` to have pgrx download/compile/install it
+    #[clap(env = "PG18_PG_CONFIG", long)]
+    pg18: Option<String>,
     #[clap(from_global, action = ArgAction::Count)]
     verbose: u8,
     #[clap(long, help = "Base port number")]
@@ -71,6 +72,9 @@ pub(crate) struct Init {
     base_testing_port: Option<u16>,
     #[clap(long, help = "Additional flags to pass to the configure script")]
     configure_flag: Vec<String>,
+    /// Do not attempt to run any compiled postgresql binaries. Useful for cross compiling.
+    #[clap(long)]
+    no_run: bool,
     /// Compile PostgreSQL with the necessary flags to detect a good amount of
     /// memory errors when run under Valgrind.
     ///
@@ -102,9 +106,6 @@ impl CommandExecute for Init {
 
         let mut versions = HashMap::new();
 
-        if let Some(ref version) = self.pg12 {
-            versions.insert("pg12", version.clone());
-        }
         if let Some(ref version) = self.pg13 {
             versions.insert("pg13", version.clone());
         }
@@ -119,6 +120,9 @@ impl CommandExecute for Init {
         }
         if let Some(ref version) = self.pg17 {
             versions.insert("pg17", version.clone());
+        }
+        if let Some(ref version) = self.pg18 {
+            versions.insert("pg18", version.clone());
         }
 
         if versions.is_empty() {
@@ -219,13 +223,15 @@ pub(crate) fn init_pgrx(pgrx: &Pgrx, init: &Init) -> eyre::Result<()> {
     for pg_config in output_configs.iter() {
         validate_pg_config(pg_config)?;
 
-        if is_root_user() {
-            println!("{} initdb as current user is root user", "   Skipping".bold().green());
-        } else {
-            let datadir = pg_config.data_dir()?;
-            let bindir = pg_config.bin_dir()?;
-            if !datadir.try_exists()? {
-                initdb(&bindir, &datadir)?;
+        if !init.no_run {
+            if is_root_user() {
+                println!("{} initdb as current user is root user", "   Skipping".bold().green());
+            } else {
+                let datadir = pg_config.data_dir()?;
+                let bindir = pg_config.bin_dir()?;
+                if !datadir.try_exists()? {
+                    initdb(&bindir, &datadir)?;
+                }
             }
         }
     }
@@ -251,18 +257,20 @@ fn download_postgres(
     let url = pg_config.url().expect("no url for pg_config").as_str();
     tracing::debug!(url = %url, "Fetching");
     let http_client = build_agent_for_url(url)?;
-    let http_response = http_client.get(url).call()?;
+    let mut http_response = http_client.get(url).call()?;
+    let mut buf = Vec::new();
+    let _count = http_response.body_mut().as_reader().read_to_end(&mut buf)?;
+
     let status = http_response.status();
     tracing::trace!(status_code = %status, url = %url, "Fetched");
     if status != 200 {
         return Err(eyre!(
             "Problem downloading {}:\ncode={status}\n{}",
             pg_config.url().unwrap().to_string().yellow().bold(),
-            http_response.into_string()?
+            String::from_utf8_lossy(&buf),
         ));
     }
-    let mut buf = Vec::new();
-    let _count = http_response.into_reader().read_to_end(&mut buf)?;
+
     let pgdir = untar(&buf, pgrx_home, pg_config, init)?;
     configure_postgres(pg_config, &pgdir, init)?;
     make_postgres(pg_config, &pgdir, init)?;
@@ -287,8 +295,18 @@ fn untar(bytes: &[u8], pgrxdir: &Path, pg_config: &PgConfig, init: &Init) -> eyr
         pg_config.version()?,
         unpackdir.display()
     );
-    let mut tar_decoder = Archive::new(BzDecoder::new(bytes));
-    tar_decoder.unpack(&unpackdir)?;
+
+    if bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"PK\x05\x06")
+        || bytes.starts_with(b"PK\x07\x08")
+    {
+        // it's a zip download from EDB
+        use std::io::Cursor;
+        zip_extract::extract(Cursor::new(bytes), &unpackdir, false)?;
+    } else {
+        let mut tar_decoder = Archive::new(BzDecoder::new(bytes));
+        tar_decoder.unpack(&unpackdir)?;
+    }
 
     let mut pgdir = pgrxdir.to_path_buf();
     pgdir.push(&pg_config.version()?);
@@ -327,7 +345,9 @@ fn untar(bytes: &[u8], pgrxdir: &Path, pg_config: &PgConfig, init: &Init) -> eyr
     Ok(pgdir)
 }
 
-fn fixup_homebrew_for_icu(configure_cmd: &mut Command) {
+#[cfg(not(target_os = "windows"))]
+fn fixup_homebrew_for_icu(configure_cmd: &mut std::process::Command) {
+    use std::process::Command;
     // See if it's disabled via an argument
     if configure_cmd.get_args().any(|a| a == "--without-icu") {
         return;
@@ -399,7 +419,10 @@ fn fixup_homebrew_for_icu(configure_cmd: &mut Command) {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn configure_postgres(pg_config: &PgConfig, pgdir: &Path, init: &Init) -> eyre::Result<()> {
+    use pgrx_pg_config::prefix_path;
+
     let _token = init.jobserver.get().unwrap().acquire().unwrap();
 
     println!("{} Postgres v{}", "  Configuring".bold().green(), pg_config.version()?);
@@ -463,6 +486,12 @@ fn configure_postgres(pg_config: &PgConfig, pgdir: &Path, init: &Init) -> eyre::
     }
 }
 
+#[cfg(target_os = "windows")]
+fn configure_postgres(_pg_config: &PgConfig, _pgdir: &Path, _init: &Init) -> eyre::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
 fn make_postgres(pg_config: &PgConfig, pgdir: &Path, init: &Init) -> eyre::Result<()> {
     println!("{} Postgres v{}", "    Compiling".bold().green(), pg_config.version()?);
     let mut command = std::process::Command::new("make");
@@ -496,6 +525,12 @@ fn make_postgres(pg_config: &PgConfig, pgdir: &Path, init: &Init) -> eyre::Resul
     }
 }
 
+#[cfg(target_os = "windows")]
+fn make_postgres(_pg_config: &PgConfig, _pgdir: &Path, _init: &Init) -> eyre::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
 fn make_install_postgres(version: &PgConfig, pgdir: &Path, init: &Init) -> eyre::Result<PgConfig> {
     println!(
         "{} Postgres v{} to {}",
@@ -534,6 +569,18 @@ fn make_install_postgres(version: &PgConfig, pgdir: &Path, init: &Init) -> eyre:
             String::from_utf8(output.stderr).unwrap()
         ))
     }
+}
+
+#[cfg(target_os = "windows")]
+fn make_install_postgres(
+    _version: &PgConfig,
+    pgdir: &Path,
+    _init: &Init,
+) -> eyre::Result<PgConfig> {
+    let mut pg_config = get_pg_installdir(pgdir);
+    pg_config.push("bin");
+    pg_config.push("pg_config.exe");
+    Ok(PgConfig::new_with_defaults(pg_config))
 }
 
 fn validate_pg_config(pg_config: &PgConfig) -> eyre::Result<()> {
@@ -575,10 +622,16 @@ fn write_config(pg_configs: &Vec<PgConfig>, init: &Init) -> eyre::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn get_pg_installdir(pgdir: &Path) -> PathBuf {
     let mut dir = pgdir.to_path_buf();
     dir.push("pgrx-install");
     dir
+}
+
+#[cfg(target_os = "windows")]
+fn get_pg_installdir(pgdir: &Path) -> PathBuf {
+    pgdir.to_path_buf()
 }
 
 #[cfg(unix)]
@@ -597,7 +650,11 @@ fn is_root_user() -> bool {
 
 pub(crate) fn initdb(bindir: &Path, datadir: &Path) -> eyre::Result<()> {
     println!(" {} data directory at {}", "Initializing".bold().green(), datadir.display());
-    let mut command = std::process::Command::new(format!("{}/initdb", bindir.display()));
+    #[cfg(not(target_os = "windows"))]
+    let initdb = bindir.join("initdb");
+    #[cfg(target_os = "windows")]
+    let initdb = bindir.join("initdb.exe");
+    let mut command = std::process::Command::new(initdb);
     command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -252,7 +252,7 @@ impl<'mcx> PgHeapTuple<'mcx, AllocatedByRust> {
     ///
     /// ## Errors
     /// - [PgHeapTupleError::IncorrectAttributeCount] if the number of items in the iterator
-    /// does not match the number of attributes in the [PgTupleDesc].
+    ///   does not match the number of attributes in the [PgTupleDesc].
     ///
     /// # Safety
     ///
@@ -320,7 +320,7 @@ impl<'mcx> PgHeapTuple<'mcx, AllocatedByRust> {
     ///
     /// - return [TryFromDatumError::NoSuchAttributeName] if the attribute does not exist
     /// - return [TryFromDatumError::IncompatibleTypes] if the Rust type of the `value` is not
-    /// compatible with the attribute's Postgres type
+    ///   compatible with the attribute's Postgres type
     pub fn set_by_name<T: IntoDatum>(
         &mut self,
         attname: &str,
@@ -339,7 +339,7 @@ impl<'mcx> PgHeapTuple<'mcx, AllocatedByRust> {
     /// ## Errors
     /// - return [TryFromDatumError::NoSuchAttributeNumber] if the attribute does not exist
     /// - return [TryFromDatumError::IncompatibleTypes] if the Rust type of the `value` is not
-    /// compatible with the attribute's Postgres type
+    ///   compatible with the attribute's Postgres type
     pub fn set_by_index<T: IntoDatum>(
         &mut self,
         attno: NonZeroUsize,
@@ -358,9 +358,9 @@ impl<'mcx> PgHeapTuple<'mcx, AllocatedByRust> {
                         if att.atttypid != array_of_composite_type_oid {
                             return Err(TryFromDatumError::IncompatibleTypes {
                                 rust_type: std::any::type_name::<T>(),
-                                rust_oid: att.atttypid,
-                                datum_type: lookup_type_name(array_of_composite_type_oid),
-                                datum_oid: array_of_composite_type_oid,
+                                rust_oid: array_of_composite_type_oid,
+                                datum_type: lookup_type_name(att.atttypid),
+                                datum_oid: att.atttypid,
                             });
                         }
                     } else {
@@ -372,20 +372,40 @@ impl<'mcx> PgHeapTuple<'mcx, AllocatedByRust> {
                         if !is_compatible_composite_types && !T::is_compatible_with(att.atttypid) {
                             return Err(TryFromDatumError::IncompatibleTypes {
                                 rust_type: std::any::type_name::<T>(),
-                                rust_oid: att.atttypid,
-                                datum_type: lookup_type_name(type_oid),
-                                datum_oid: type_oid,
+                                rust_oid: type_oid,
+                                datum_type: lookup_type_name(att.atttypid),
+                                datum_oid: att.atttypid,
                             });
                         }
                     }
                 }
             }
 
+            self.set_by_index_unchecked(attno, value.into_datum());
+            Ok(())
+        }
+    }
+
+    /// Given the index for an attribute in this [PgHeapTuple], change its value.
+    ///
+    /// Attribute numbers start at 1, not 0.
+    ///
+    /// This will not check if the datum is compatible with the attribute's type.
+    ///
+    /// ## Safety
+    ///
+    /// This function is unsafe as it does not check if the datum is compatible with the attribute's type.
+    pub unsafe fn set_by_index_unchecked(
+        &mut self,
+        attno: NonZeroUsize,
+        value: Option<pg_sys::Datum>,
+    ) {
+        unsafe {
             let mut datums = (0..self.tupdesc.len()).map(pg_sys::Datum::from).collect::<Vec<_>>();
             let mut nulls = (0..self.tupdesc.len()).map(|_| false).collect::<Vec<_>>();
             let mut do_replace = (0..self.tupdesc.len()).map(|_| false).collect::<Vec<_>>();
 
-            let datum = value.into_datum();
+            let datum = value;
             let attno = attno.get() - 1;
 
             nulls[attno] = datum.is_none();
@@ -403,12 +423,11 @@ impl<'mcx> PgHeapTuple<'mcx, AllocatedByRust> {
             );
             let old_tuple = std::mem::replace(&mut self.tuple, new_tuple);
             drop(old_tuple);
-            Ok(())
         }
     }
 }
 
-impl<'mcx, AllocatedBy: WhoAllocated> IntoDatum for PgHeapTuple<'mcx, AllocatedBy> {
+impl<AllocatedBy: WhoAllocated> IntoDatum for PgHeapTuple<'_, AllocatedBy> {
     // Delegate to `into_composite_datum()` as this will normally be used with composite types.
     // See `into_trigger_datum()` if using as a trigger.
     fn into_datum(self) -> Option<pg_sys::Datum> {
@@ -434,7 +453,7 @@ impl<'mcx, AllocatedBy: WhoAllocated> IntoDatum for PgHeapTuple<'mcx, AllocatedB
     }
 }
 
-impl<'mcx, AllocatedBy: WhoAllocated> PgHeapTuple<'mcx, AllocatedBy> {
+impl<AllocatedBy: WhoAllocated> PgHeapTuple<'_, AllocatedBy> {
     /// Consume this [`PgHeapTuple`] and return a composite Datum representation, containing the tuple
     /// data and the corresponding tuple descriptor information.
     pub fn into_composite_datum(self) -> Option<pg_sys::Datum> {
@@ -508,7 +527,7 @@ impl<'mcx, AllocatedBy: WhoAllocated> PgHeapTuple<'mcx, AllocatedBy> {
     /// ## Errors
     /// - return [`TryFromDatumError::NoSuchAttributeName`] if the attribute does not exist
     /// - return [`TryFromDatumError::IncompatibleTypes`] if the Rust type of the `value` is not
-    /// compatible with the attribute's Postgres type
+    ///   compatible with the attribute's Postgres type
     pub fn get_by_name<'tup, T>(&'tup self, attname: &str) -> Result<Option<T>, TryFromDatumError>
     where
         T: FromDatum + IntoDatum + UnboxDatum<As<'tup> = T> + 'tup,
@@ -532,7 +551,7 @@ impl<'mcx, AllocatedBy: WhoAllocated> PgHeapTuple<'mcx, AllocatedBy> {
     /// ## Errors
     /// - return [`TryFromDatumError::NoSuchAttributeNumber`] if the attribute does not exist
     /// - return [`TryFromDatumError::IncompatibleTypes`] if the Rust type of the `value` is not
-    /// compatible with the attribute's Postgres type
+    ///   compatible with the attribute's Postgres type
     pub fn get_by_index<'tup, T>(
         &'tup self,
         attno: NonZeroUsize,

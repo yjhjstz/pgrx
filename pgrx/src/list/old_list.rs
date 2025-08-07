@@ -110,42 +110,12 @@ impl<T> PgList<T> {
         }
     }
 
-    #[cfg(feature = "pg12")]
-    #[inline]
-    pub unsafe fn replace_ptr(&mut self, i: usize, with: *mut T) {
-        let cell = pg_sys::list_nth_cell(self.list, i as i32);
-        cell.as_mut().expect("cell is null").data.ptr_value = with as void_mut_ptr;
-    }
-
-    #[cfg(any(
-        feature = "pg13",
-        feature = "pg14",
-        feature = "pg15",
-        feature = "pg16",
-        feature = "pg17"
-    ))]
     #[inline]
     pub unsafe fn replace_ptr(&mut self, i: usize, with: *mut T) {
         let cell = pg_sys::list_nth_cell(self.list, i as i32);
         cell.as_mut().expect("cell is null").ptr_value = with as void_mut_ptr;
     }
 
-    #[cfg(feature = "pg12")]
-    #[inline]
-    pub fn replace_int(&mut self, i: usize, with: i32) {
-        unsafe {
-            let cell = pg_sys::list_nth_cell(self.list, i as i32);
-            cell.as_mut().expect("cell is null").data.int_value = with;
-        }
-    }
-
-    #[cfg(any(
-        feature = "pg13",
-        feature = "pg14",
-        feature = "pg15",
-        feature = "pg16",
-        feature = "pg17"
-    ))]
     #[inline]
     pub fn replace_int(&mut self, i: usize, with: i32) {
         unsafe {
@@ -154,22 +124,6 @@ impl<T> PgList<T> {
         }
     }
 
-    #[cfg(feature = "pg12")]
-    #[inline]
-    pub fn replace_oid(&mut self, i: usize, with: pg_sys::Oid) {
-        unsafe {
-            let cell = pg_sys::list_nth_cell(self.list, i as i32);
-            cell.as_mut().expect("cell is null").data.oid_value = with;
-        }
-    }
-
-    #[cfg(any(
-        feature = "pg13",
-        feature = "pg14",
-        feature = "pg15",
-        feature = "pg16",
-        feature = "pg17"
-    ))]
     #[inline]
     pub fn replace_oid(&mut self, i: usize, with: pg_sys::Oid) {
         unsafe {
@@ -231,7 +185,7 @@ struct PgListIteratorInt<'a, T> {
     pos: usize,
 }
 
-impl<'a, T> Iterator for PgListIteratorPtr<'a, T> {
+impl<T> Iterator for PgListIteratorPtr<'_, T> {
     type Item = *mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -241,7 +195,7 @@ impl<'a, T> Iterator for PgListIteratorPtr<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for PgListIteratorOid<'a, T> {
+impl<T> Iterator for PgListIteratorOid<'_, T> {
     type Item = pg_sys::Oid;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -251,7 +205,7 @@ impl<'a, T> Iterator for PgListIteratorOid<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for PgListIteratorInt<'a, T> {
+impl<T> Iterator for PgListIteratorInt<'_, T> {
     type Item = i32;
 
     fn next(&mut self) -> Option<Self::Item> {

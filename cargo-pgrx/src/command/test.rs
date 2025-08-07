@@ -20,7 +20,7 @@ use crate::CommandExecute;
 #[derive(clap::Args, Debug, Clone)]
 #[clap(author)]
 pub(crate) struct Test {
-    /// Do you want to run against pg12, pg13, pg14, pg15, pg16, pg17, or all?
+    /// Do you want to run against pg13, pg14, pg15, pg16, pg17, pg18, or all?
     #[clap(env = "PG_VERSION")]
     pg_version: Option<String>,
     /// If specified, only run tests containing this string in their names
@@ -126,6 +126,11 @@ pub fn test_extension(
     runas: Option<String>,
     pgdata: Option<PathBuf>,
 ) -> eyre::Result<()> {
+    #[cfg(target_os = "windows")]
+    if runas.is_some() {
+        eyre::bail!("`--runas` is not supported on Windows");
+    }
+
     if let Some(ref testname) = testname {
         tracing::Span::current().record("testname", tracing::field::display(&testname.as_ref()));
     }

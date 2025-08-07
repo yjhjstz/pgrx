@@ -96,7 +96,7 @@ pub(crate) fn modify_features_for_version(
         // that aren't valid for the manifest
         if test {
             features.features.retain(|flag| {
-                if manifest.features.contains_key(flag) {
+                if manifest.features.contains_key(flag) || flag == "pgrx/cshim" {
                     true
                 } else {
                     use owo_colors::OwoColorize;
@@ -196,13 +196,13 @@ pub(crate) fn display_version_info(pg_config: &PgConfig, pg_version: &PgVersionS
 
 pub(crate) fn get_package_manifest(
     features: &Features,
-    package_nane: Option<&String>,
+    package_name: Option<&String>,
     manifest_path: Option<impl AsRef<std::path::Path>>,
 ) -> eyre::Result<(Manifest, PathBuf)> {
     let metadata = crate::metadata::metadata(features, manifest_path.as_ref())
         .wrap_err("couldn't get cargo metadata")?;
     crate::metadata::validate(manifest_path.as_ref(), &metadata)?;
-    let package_manifest_path = crate::manifest::manifest_path(&metadata, package_nane)
+    let package_manifest_path = crate::manifest::manifest_path(&metadata, package_name)
         .wrap_err("Couldn't get manifest path")?;
 
     Ok((
@@ -213,7 +213,7 @@ pub(crate) fn get_package_manifest(
 
 pub(crate) fn all_pg_in_both_tomls<'a>(
     manifest: &'a Manifest,
-    pgrx: &Pgrx,
+    pgrx: &'a Pgrx,
 ) -> impl Iterator<Item = eyre::Result<PgConfig>> + 'a {
     // Maybe eventually warn when the Cargo.toml has a version our config.toml doesn't,
     // as it makes sense to further constrain support from the version set pgrx supports,

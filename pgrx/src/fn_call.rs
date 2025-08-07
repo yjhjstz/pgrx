@@ -220,8 +220,7 @@ pub fn fn_call_with_collation<R: FromDatum + IntoDatum>(
         // Right now we only know how to support arguments with the IN mode.  Perhaps in the
         // future we can support IN_OUT and TABLE return types
         return Err(FnCallError::UnsupportedArgumentModes);
-    } else if retoid == pg_sys::INTERNALOID
-        || pg_proc.proargtypes().iter().any(|oid| *oid == pg_sys::INTERNALOID)
+    } else if retoid == pg_sys::INTERNALOID || pg_proc.proargtypes().contains(&pg_sys::INTERNALOID)
     {
         // No idea what to do with the INTERNAL type.  Generally it's just a raw pointer but pgrx
         // has no way to express that with `IntoDatum`.  And passing around raw pointers seem
@@ -391,13 +390,13 @@ fn lookup_fn(fname: &str, args: &[&dyn FnCallArg]) -> Result<pg_sys::Oid> {
             // SAFETY:  we palloc'd the `pg_sys::String` elements of `parts_list` above and so it's
             // safe for us to free them now that they're no longer being used
             parts_list.drain(..).for_each(|s| {
-                #[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14"))]
+                #[cfg(any(feature = "pg13", feature = "pg14"))]
                 {
                     let s = s.cast::<pg_sys::Value>();
                     pg_sys::pfree((*s).val.str_.cast());
                 }
 
-                #[cfg(any(feature = "pg15", feature = "pg16", feature = "pg17"))]
+                #[cfg(any(feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18"))]
                 {
                     let s = s.cast::<pg_sys::String>();
                     pg_sys::pfree((*s).sval.cast());
@@ -410,7 +409,7 @@ fn lookup_fn(fname: &str, args: &[&dyn FnCallArg]) -> Result<pg_sys::Oid> {
 
 /// Parses an arbitrary string as if it is a SQL identifier.  If it's not, [`FnCallError::InvalidIdentifier`]
 /// is returned
-fn parse_sql_ident(ident: &str) -> Result<Array<&str>> {
+fn parse_sql_ident(ident: &str) -> Result<Array<'_, &str>> {
     unsafe {
         direct_function_call::<Array<&str>>(
             pg_sys::parse_ident,

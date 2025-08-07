@@ -8,6 +8,7 @@
 //LICENSE
 //LICENSE Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 pub mod datum;
+pub mod transaction_id;
 #[macro_use]
 pub mod elog;
 pub mod cmp;
@@ -17,8 +18,8 @@ pub mod htup;
 pub mod oids;
 pub mod panic;
 pub mod pg_try;
-pub mod polyfill;
-pub(crate) mod thread_check;
+#[doc(hidden)]
+pub mod thread_check;
 pub mod tupdesc;
 
 pub mod utils;
@@ -27,10 +28,9 @@ pub mod utils;
 mod sql_translatable;
 
 pub use datum::Datum;
+pub use transaction_id::{MultiXactId, TransactionId};
 
 pub use htup::*;
 pub use oids::*;
 pub use pg_try::*;
-#[cfg(feature = "pg12")]
-pub use polyfill::*;
 pub use utils::*;

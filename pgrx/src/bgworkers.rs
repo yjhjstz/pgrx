@@ -20,7 +20,7 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-pub static mut PREV_SHMEM_STARTUP_HOOK: Option<unsafe extern "C" fn()> = None;
+pub static mut PREV_SHMEM_STARTUP_HOOK: Option<unsafe extern "C-unwind" fn()> = None;
 static GOT_SIGHUP: AtomicBool = AtomicBool::new(false);
 static GOT_SIGTERM: AtomicBool = AtomicBool::new(false);
 static GOT_SIGINT: AtomicBool = AtomicBool::new(false);
@@ -52,9 +52,6 @@ bitflags! {
         const WL_POSTMASTER_DEATH  = pg_sys::WL_POSTMASTER_DEATH as i32;
         const WL_SOCKET_CONNECTED  = pg_sys::WL_SOCKET_WRITEABLE as i32;
         const WL_SOCKET_MASK       = (pg_sys::WL_SOCKET_READABLE | pg_sys::WL_SOCKET_WRITEABLE | pg_sys::WL_SOCKET_CONNECTED) as i32;
-        #[cfg(feature = "pg12")]
-        const WL_EXIT_ON_PM_DEATH  = pg_sys::WL_EXIT_ON_PM_DEATH  as i32;
-
     }
 }
 
@@ -75,12 +72,12 @@ impl BackgroundWorker {
     /// What is our name?
     pub fn get_name() -> &'static str {
         #[cfg(any(
-            feature = "pg12",
             feature = "pg13",
             feature = "pg14",
             feature = "pg15",
             feature = "pg16",
-            feature = "pg17"
+            feature = "pg17",
+            feature = "pg18"
         ))]
         const LEN: usize = 96;
 
@@ -197,14 +194,37 @@ impl BackgroundWorker {
 
         unsafe {
             #[cfg(any(
-                feature = "pg12",
                 feature = "pg13",
                 feature = "pg14",
                 feature = "pg15",
                 feature = "pg16",
-                feature = "pg17"
+                feature = "pg17",
+                feature = "pg18"
             ))]
             pg_sys::BackgroundWorkerInitializeConnection(db, user, 0);
+        };
+    }
+
+    /// Intended to be called once to indicate the database and user to use to
+    /// connect to via SPI
+    pub fn connect_worker_to_spi_by_oid(dboid: Option<pg_sys::Oid>, useroid: Option<pg_sys::Oid>) {
+        unsafe {
+            assert!(!pg_sys::MyBgworkerEntry.is_null(), "BackgroundWorker associated functions can only be called from a registered background worker");
+        }
+
+        let dboid = dboid.unwrap_or(pg_sys::InvalidOid);
+        let useroid = useroid.unwrap_or(pg_sys::InvalidOid);
+
+        unsafe {
+            #[cfg(any(
+                feature = "pg13",
+                feature = "pg14",
+                feature = "pg15",
+                feature = "pg16",
+                feature = "pg17",
+                feature = "pg18"
+            ))]
+            pg_sys::BackgroundWorkerInitializeConnectionByOid(dboid, useroid, 0);
         };
     }
 
@@ -221,16 +241,52 @@ impl BackgroundWorker {
         unsafe {
             assert!(!pg_sys::MyBgworkerEntry.is_null(), "BackgroundWorker associated functions can only be called from a registered background worker");
             if wake.contains(SignalWakeFlags::SIGHUP) {
+                #[cfg(any(
+                    feature = "pg13",
+                    feature = "pg14",
+                    feature = "pg15",
+                    feature = "pg16",
+                    feature = "pg17"
+                ))]
                 pg_sys::pqsignal(pg_sys::SIGHUP as i32, Some(worker_spi_sighup));
+                #[cfg(feature = "pg18")]
+                pg_sys::pqsignal_be(pg_sys::SIGHUP as i32, Some(worker_spi_sighup));
             }
             if wake.contains(SignalWakeFlags::SIGTERM) {
+                #[cfg(any(
+                    feature = "pg13",
+                    feature = "pg14",
+                    feature = "pg15",
+                    feature = "pg16",
+                    feature = "pg17"
+                ))]
                 pg_sys::pqsignal(pg_sys::SIGTERM as i32, Some(worker_spi_sigterm));
+                #[cfg(feature = "pg18")]
+                pg_sys::pqsignal_be(pg_sys::SIGTERM as i32, Some(worker_spi_sigterm));
             }
             if wake.contains(SignalWakeFlags::SIGINT) {
+                #[cfg(any(
+                    feature = "pg13",
+                    feature = "pg14",
+                    feature = "pg15",
+                    feature = "pg16",
+                    feature = "pg17"
+                ))]
                 pg_sys::pqsignal(pg_sys::SIGINT as i32, Some(worker_spi_sigint));
+                #[cfg(feature = "pg18")]
+                pg_sys::pqsignal_be(pg_sys::SIGINT as i32, Some(worker_spi_sigint));
             }
             if wake.contains(SignalWakeFlags::SIGCHLD) {
+                #[cfg(any(
+                    feature = "pg13",
+                    feature = "pg14",
+                    feature = "pg15",
+                    feature = "pg16",
+                    feature = "pg17"
+                ))]
                 pg_sys::pqsignal(pg_sys::SIGCHLD as i32, Some(worker_spi_sigchld));
+                #[cfg(feature = "pg18")]
+                pg_sys::pqsignal_be(pg_sys::SIGCHLD as i32, Some(worker_spi_sigchld));
             }
             pg_sys::BackgroundWorkerUnblockSignals();
         }
@@ -256,26 +312,32 @@ impl BackgroundWorker {
     }
 }
 
-unsafe extern "C" fn worker_spi_sighup(_signal_args: i32) {
+unsafe extern "C-unwind" fn worker_spi_sighup(_signal_args: i32) {
     GOT_SIGHUP.store(true, Ordering::SeqCst);
-    pg_sys::ProcessConfigFile(pg_sys::GucContext::PGC_SIGHUP);
+    (&raw mut pg_sys::ConfigReloadPending).write_volatile(1);
     pg_sys::SetLatch(pg_sys::MyLatch);
 }
 
-unsafe extern "C" fn worker_spi_sigterm(_signal_args: i32) {
+unsafe extern "C-unwind" fn worker_spi_sigterm(_signal_args: i32) {
     GOT_SIGTERM.store(true, Ordering::SeqCst);
+    (&raw mut pg_sys::ShutdownRequestPending).write_volatile(1);
     pg_sys::SetLatch(pg_sys::MyLatch);
 }
 
-unsafe extern "C" fn worker_spi_sigint(_signal_args: i32) {
+unsafe extern "C-unwind" fn worker_spi_sigint(_signal_args: i32) {
     GOT_SIGINT.store(true, Ordering::SeqCst);
     pg_sys::SetLatch(pg_sys::MyLatch);
 }
 
-unsafe extern "C" fn worker_spi_sigchld(_signal_args: i32) {
+unsafe extern "C-unwind" fn worker_spi_sigchld(_signal_args: i32) {
     GOT_SIGCHLD.store(true, Ordering::SeqCst);
     pg_sys::SetLatch(pg_sys::MyLatch);
 }
+
+/// Indicates that a [`DynamicBackgroundWorker`] could not be loaded.
+/// There's no reason why.
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicBackgroundWorkerLoadError;
 
 /// Dynamic background worker handle
 pub struct DynamicBackgroundWorker {
@@ -410,7 +472,7 @@ impl TerminatingDynamicBackgroundWorker {
 /// use pgrx::bgworkers::BackgroundWorkerBuilder;
 ///
 /// #[pg_guard]
-/// pub extern "C" fn _PG_init() {
+/// pub extern "C-unwind" fn _PG_init() {
 ///     BackgroundWorkerBuilder::new("My Example BGWorker")
 ///         .set_function("background_worker_main")
 ///         .set_library("example")
@@ -419,7 +481,7 @@ impl TerminatingDynamicBackgroundWorker {
 /// }
 ///
 /// #[pg_guard]
-/// pub extern "C" fn background_worker_main(_arg: pg_sys::Datum) {
+/// pub extern "C-unwind" fn background_worker_main(_arg: pg_sys::Datum) {
 ///     // do bgworker stuff here
 /// }
 /// ```
@@ -436,7 +498,7 @@ pub struct BackgroundWorkerBuilder {
     bgw_notify_pid: pg_sys::pid_t,
     #[cfg(feature = "cbdb")]
     bgw_start_rule: pg_sys::bgworker_start_rule,
-    shared_memory_startup_fn: Option<unsafe extern "C" fn()>,
+    shared_memory_startup_fn: Option<unsafe extern "C-unwind" fn()>,
 }
 
 impl BackgroundWorkerBuilder {
@@ -474,7 +536,7 @@ impl BackgroundWorkerBuilder {
     ///
     /// `startup` allows specifying shared memory initialization startup hook. Ignored
     /// if [`BackgroundWorkerBuilder::load_dynamic`] is used.
-    pub fn enable_shmem_access(mut self, startup: Option<unsafe extern "C" fn()>) -> Self {
+    pub fn enable_shmem_access(mut self, startup: Option<unsafe extern "C-unwind" fn()>) -> Self {
         self.bgw_flags = self.bgw_flags | BGWflags::BGWORKER_SHMEM_ACCESS;
         self.shared_memory_startup_fn = startup;
         self
@@ -518,7 +580,7 @@ impl BackgroundWorkerBuilder {
     /// process is started?
     ///
     /// The specified function **must** be:
-    ///     - `extern "C"`,
+    ///     - `extern "C-unwind"`,
     ///     - guarded with `#[pg_guard]`,
     ///     - take 1 argument of type `pgrx::pg_sys::Datum`, and
     ///     - return "void"
@@ -529,7 +591,7 @@ impl BackgroundWorkerBuilder {
     /// use pgrx::prelude::*;
     ///
     /// #[pg_guard]
-    /// pub extern "C" fn background_worker_main(_arg: pg_sys::Datum) {
+    /// pub extern "C-unwind" fn background_worker_main(_arg: pg_sys::Datum) {
     /// }
     /// ```
     pub fn set_function(mut self, input: &str) -> Self {
@@ -614,7 +676,7 @@ impl BackgroundWorkerBuilder {
 
     /// Once properly configured, call `load_dynamic()` to get the BackgroundWorker registered and started dynamically.
     /// Start up might fail, e.g. if max_worker_processes is exceeded. In that case an Err is returned.
-    pub fn load_dynamic(self) -> Result<DynamicBackgroundWorker, ()> {
+    pub fn load_dynamic(self) -> Result<DynamicBackgroundWorker, DynamicBackgroundWorkerLoadError> {
         let mut bgw: pg_sys::BackgroundWorker = (&self).into();
         let mut handle: *mut pg_sys::BackgroundWorkerHandle = null_mut();
 
@@ -622,7 +684,7 @@ impl BackgroundWorkerBuilder {
         let success = unsafe { pg_sys::RegisterDynamicBackgroundWorker(&mut bgw, &mut handle) };
 
         if !success {
-            Err(())
+            Err(DynamicBackgroundWorkerLoadError)
         } else {
             Ok(DynamicBackgroundWorker { handle, notify_pid: bgw.bgw_notify_pid })
         }
@@ -634,15 +696,7 @@ impl BackgroundWorkerBuilder {
 /// the builder is useful for building this structure.
 impl<'a> From<&'a BackgroundWorkerBuilder> for pg_sys::BackgroundWorker {
     fn from(builder: &'a BackgroundWorkerBuilder) -> Self {
-        #[cfg(any(
-            feature = "pg12",
-            feature = "pg13",
-            feature = "pg14",
-            feature = "pg15",
-            feature = "pg16",
-            feature = "pg17"
-        ))]
-        let bgw = pg_sys::BackgroundWorker {
+        pg_sys::BackgroundWorker {
             bgw_name: RpgffiChar::from(&builder.bgw_name[..]).0,
             bgw_type: RpgffiChar::from(&builder.bgw_type[..]).0,
             bgw_flags: builder.bgw_flags.bits(),
@@ -652,12 +706,12 @@ impl<'a> From<&'a BackgroundWorkerBuilder> for pg_sys::BackgroundWorker {
                 Some(d) => d.as_secs() as i32,
             },
             bgw_library_name: {
-                #[cfg(not(feature = "pg17"))]
+                #[cfg(not(any(feature = "pg17", feature = "pg18")))]
                 {
                     RpgffiChar::from(&builder.bgw_library_name[..]).0
                 }
 
-                #[cfg(feature = "pg17")]
+                #[cfg(any(feature = "pg17", feature = "pg18"))]
                 {
                     RpgffiChar1024::from(&builder.bgw_library_name[..]).0
                 }
@@ -668,9 +722,7 @@ impl<'a> From<&'a BackgroundWorkerBuilder> for pg_sys::BackgroundWorker {
             bgw_notify_pid: builder.bgw_notify_pid,
             #[cfg(feature = "cbdb")]
             bgw_start_rule: builder.bgw_start_rule,
-        };
-
-        bgw
+        }
     }
 }
 
@@ -690,19 +742,19 @@ fn wait_latch(timeout: libc::c_long, wakeup_flags: WLflags) -> i32 {
 }
 
 #[cfg(any(
-    feature = "pg12",
     feature = "pg13",
     feature = "pg14",
     feature = "pg15",
     feature = "pg16",
-    feature = "pg17"
+    feature = "pg17",
+    feature = "pg18"
 ))]
 type RpgffiChar = RpgffiChar96;
 
 #[allow(dead_code)]
 struct RpgffiChar64([c_char; 64]);
 
-impl<'a> From<&'a str> for RpgffiChar64 {
+impl From<&str> for RpgffiChar64 {
     fn from(string: &str) -> Self {
         let mut r = [0; 64];
         for (dest, src) in r.iter_mut().zip(string.as_bytes()) {
@@ -714,7 +766,7 @@ impl<'a> From<&'a str> for RpgffiChar64 {
 
 struct RpgffiChar96([c_char; 96]);
 
-impl<'a> From<&'a str> for RpgffiChar96 {
+impl From<&str> for RpgffiChar96 {
     fn from(string: &str) -> Self {
         let mut r = [0; 96];
         for (dest, src) in r.iter_mut().zip(string.as_bytes()) {
@@ -726,7 +778,7 @@ impl<'a> From<&'a str> for RpgffiChar96 {
 
 struct RpgffiChar128([c_char; 128]);
 
-impl<'a> From<&'a str> for RpgffiChar128 {
+impl From<&str> for RpgffiChar128 {
     fn from(string: &str) -> Self {
         let mut r = [0; 128];
         for (dest, src) in r.iter_mut().zip(string.as_bytes()) {
@@ -739,7 +791,7 @@ impl<'a> From<&'a str> for RpgffiChar128 {
 #[allow(dead_code)]
 struct RpgffiChar1024([c_char; 1024]);
 
-impl<'a> From<&'a str> for RpgffiChar1024 {
+impl From<&str> for RpgffiChar1024 {
     fn from(string: &str) -> Self {
         let mut r = [0; 1024];
         for (dest, src) in r.iter_mut().zip(string.as_bytes()) {

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 //LICENSE Portions Copyright 2019-2021 ZomboDB, LLC.
 //LICENSE
 //LICENSE Portions Copyright 2021-2023 Technology Concepts & Design, Inc.
@@ -9,6 +10,7 @@
 //LICENSE Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 use crate::command::get::get_property;
 use crate::command::install::install_extension;
+use crate::command::regress::Regress;
 use crate::command::start::start_postgres;
 use crate::command::stop::stop_postgres;
 use crate::manifest::{get_package_manifest, pg_config_and_version};
@@ -17,14 +19,13 @@ use crate::CommandExecute;
 use eyre::eyre;
 use owo_colors::OwoColorize;
 use pgrx_pg_config::{createdb, PgConfig, Pgrx};
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
 /// Compile/install extension to a pgrx-managed Postgres instance and start psql
 #[derive(clap::Args, Debug)]
 #[clap(author)]
 pub(crate) struct Run {
-    /// Do you want to run against pg12, pg13, pg14, pg15, pg16, or pg17?
+    /// Do you want to run against pg13, pg14, pg15, pg16, pg17, or pg18?
     #[clap(env = "PG_VERSION")]
     pg_version: Option<String>,
     /// The database to connect to (and create if the first time).  Defaults to a database with the same name as the current extension name
@@ -34,7 +35,7 @@ pub(crate) struct Run {
     package: Option<String>,
     /// Path to Cargo.toml
     #[clap(long)]
-    manifest_path: Option<String>,
+    manifest_path: Option<PathBuf>,
     /// Compile for release mode (default is debug)
     #[clap(long, short)]
     release: bool,
@@ -43,16 +44,45 @@ pub(crate) struct Run {
     profile: Option<String>,
     #[clap(flatten)]
     features: clap_cargo::Features,
+    #[clap(long)]
+    target: Option<String>,
     #[clap(from_global, action = ArgAction::Count)]
     verbose: u8,
     /// Use an existing `pgcli` on the $PATH.
     #[clap(env = "PGRX_PGCLI", long)]
     pgcli: bool,
+    /// Install without running
+    #[clap(long)]
+    install_only: bool,
+    #[clap(long)]
+    valgrind: bool,
 }
 
-impl CommandExecute for Run {
-    #[tracing::instrument(level = "error", skip(self))]
-    fn execute(mut self) -> eyre::Result<()> {
+impl From<&Regress> for Run {
+    fn from(regress: &Regress) -> Self {
+        Run {
+            pg_version: regress.pg_version.clone(),
+            dbname: regress.dbname.clone(),
+            package: regress.package.clone(),
+            manifest_path: regress.manifest_path.clone(),
+            release: regress.release,
+            profile: regress.profile.clone(),
+            features: regress.features.clone(),
+            target: None,
+            verbose: regress.verbose,
+            pgcli: false,
+            install_only: false,
+            valgrind: false,
+        }
+    }
+}
+
+impl Run {
+    pub(crate) fn install(
+        &mut self,
+        create_database: bool,
+        postgresql_conf: &HashMap<String, String>,
+    ) -> eyre::Result<(PgConfig, String)> {
         let pgrx = Pgrx::from_config()?;
         let (package_manifest, package_manifest_path) = get_package_manifest(
             &self.features,
@@ -67,8 +97,8 @@ impl CommandExecute for Run {
             true,
         )?;
 
-        let dbname = match self.dbname {
-            Some(dbname) => dbname,
+        let dbname = match &self.dbname {
+            Some(dbname) => dbname.clone(),
             None => get_property(&package_manifest_path, "extname")?
                 .ok_or(eyre!("could not determine extension name"))?,
         };
@@ -81,12 +111,28 @@ impl CommandExecute for Run {
             &pg_config,
             self.manifest_path.as_ref(),
             self.package.as_ref(),
-            package_manifest_path,
+            &package_manifest_path,
             &dbname,
+            create_database,
             &profile,
-            self.pgcli,
             &self.features,
-        )
+            self.install_only,
+            self.valgrind,
+            self.target.as_deref(),
+            postgresql_conf,
+        )?;
+
+        Ok((pg_config, dbname))
+    }
+}
+
+impl CommandExecute for Run {
+    #[tracing::instrument(level = "error", skip(self))]
+    fn execute(mut self) -> eyre::Result<()> {
+        let (pg_config, dbname) = self.install(true, &Default::default())?;
+
+        // run psql
+        exec_psql(&pg_config, &dbname, self.pgcli)
     }
 }
 
@@ -99,11 +145,15 @@ pub(crate) fn run(
     pg_config: &PgConfig,
     user_manifest_path: Option<impl AsRef<Path>>,
     user_package: Option<&String>,
-    package_manifest_path: impl AsRef<Path>,
+    package_manifest_path: &Path,
     dbname: &str,
+    create_database: bool,
     profile: &CargoProfile,
-    pgcli: bool,
     features: &clap_cargo::Features,
+    install_only: bool,
+    use_valgrind: bool,
+    target: Option<&str>,
+    postgresql_conf: &HashMap<String, String>,
 ) -> eyre::Result<()> {
     // stop postgres
     stop_postgres(pg_config)?;
@@ -118,23 +168,28 @@ pub(crate) fn run(
         false,
         None,
         features,
+        target,
     )?;
 
+    if install_only {
+        return Ok(());
+    }
+
     // restart postgres
-    start_postgres(pg_config)?;
+    start_postgres(pg_config, postgresql_conf, use_valgrind)?;
 
     // create the named database
-    if !createdb(pg_config, dbname, false, true, None)? {
+    if create_database && !createdb(pg_config, dbname, false, true, None)? {
         println!("{} existing database {}", "    Re-using".bold().cyan(), dbname);
     }
 
-    // run psql
-    exec_psql(pg_config, dbname, pgcli)
+    Ok(())
 }
 
 #[cfg(unix)]
 pub(crate) fn exec_psql(pg_config: &PgConfig, dbname: &str, pgcli: bool) -> eyre::Result<()> {
     use std::os::unix::process::CommandExt;
+    use std::process::Command;
     let mut command = Command::new(match pgcli {
         false => pg_config.psql_path()?.into_os_string(),
         true => "pgcli".to_string().into(),
@@ -156,5 +211,28 @@ pub(crate) fn exec_psql(pg_config: &PgConfig, dbname: &str, pgcli: bool) -> eyre
 
 #[cfg(not(unix))]
 pub(crate) fn exec_psql(pg_config: &PgConfig, dbname: &str, pgcli: bool) -> eyre::Result<()> {
-    panic!("Tried to exec on a platform that doesn't support exec!")
+    use std::process::Command;
+    use std::process::Stdio;
+    let mut command = Command::new(match pgcli {
+        false => pg_config.psql_path()?.into_os_string(),
+        true => "pgcli".to_string().into(),
+    });
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .env_remove("PGDATABASE")
+        .env_remove("PGHOST")
+        .env_remove("PGPORT")
+        .env_remove("PGUSER")
+        .arg("-h")
+        .arg(pg_config.host())
+        .arg("-p")
+        .arg(pg_config.port()?.to_string())
+        .arg(dbname);
+    let command_str = format!("{command:?}");
+    tracing::debug!(command = %command_str, "Running");
+    let output = command.output()?;
+    tracing::trace!(status_code = %output.status, command = %command_str, "Finished");
+    Ok(())
 }

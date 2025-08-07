@@ -83,7 +83,7 @@ mod tests {
             // this is the type of error we expect.  It comes to us here as the PostgresError
             // variant because, while it was a Rust panic, it was from a function with #[pg_guard]
             // directly called from Postgres
-            Some(&pg_sys::panic::CaughtError::PostgresError(ref report))
+            Some(pg_sys::panic::CaughtError::PostgresError(report))
                 if report.message() == "please don't crash" =>
             {
                 // ok!
@@ -109,7 +109,7 @@ mod tests {
         let ctx_sys = ctx.value();
         PgTryBuilder::new(move || unsafe {
             ctx.switch_to(|_| {
-                assert_eq!(pg_sys::CurrentMemoryContext, ctx_sys);
+                assert!(std::ptr::eq(pg_sys::CurrentMemoryContext, ctx_sys));
                 panic!();
             });
         })

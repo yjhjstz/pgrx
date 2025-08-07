@@ -9,11 +9,19 @@ use super::query::PreparableQuery;
 
 // TODO: should `'conn` be invariant?
 pub struct SpiClient<'conn> {
-    __marker: PhantomData<&'conn SpiConnection>,
+    __marker: PhantomData<&'conn ()>,
 }
 
 impl<'conn> SpiClient<'conn> {
-    /// Prepares a statement that is valid for the lifetime of the client
+    /// Connect to Postgres' SPI system.
+    pub(super) fn connect() -> SpiResult<Self> {
+        // SPI_connect() is documented as being able to return SPI_ERROR_CONNECT, so we have to
+        // assume it could.  The truth seems to be that it never actually does.
+        Spi::check_status(unsafe { pg_sys::SPI_connect() })?;
+        Ok(SpiClient { __marker: PhantomData })
+    }
+
+    /// Prepares a statement that is valid for the lifetime of the client.
     pub fn prepare<Q: PreparableQuery<'conn>>(
         &self,
         query: Q,
@@ -22,7 +30,7 @@ impl<'conn> SpiClient<'conn> {
         query.prepare(self, args)
     }
 
-    /// Prepares a mutating statement that is valid for the lifetime of the client
+    /// Prepares a mutating statement that is valid for the lifetime of the client.
     pub fn prepare_mut<Q: PreparableQuery<'conn>>(
         &self,
         query: Q,
@@ -31,7 +39,7 @@ impl<'conn> SpiClient<'conn> {
         query.prepare_mut(self, args)
     }
 
-    /// perform a SELECT statement
+    /// Perform a SELECT statement.
     pub fn select<'mcx, Q: Query<'conn>>(
         &self,
         query: Q,
@@ -41,7 +49,7 @@ impl<'conn> SpiClient<'conn> {
         query.execute(self, limit, args)
     }
 
-    /// perform any query (including utility statements) that modify the database in some way
+    /// Perform any query (including utility statements) that modify the database in some way.
     pub fn update<'mcx, Q: Query<'conn>>(
         &mut self,
         query: Q,
@@ -58,10 +66,7 @@ impl<'conn> SpiClient<'conn> {
         Ok(SpiTupleTable {
             status_code: Spi::check_status(status_code)?,
             // SAFETY: no concurrent access
-            table: unsafe { pg_sys::SPI_tuptable.as_mut()},
-            #[cfg(feature = "pg12")]
-            size: unsafe { pg_sys::SPI_processed as usize },
-            #[cfg(not(feature = "pg12"))]
+            table: unsafe { pg_sys::SPI_tuptable.as_mut() },
             // SAFETY: no concurrent access
             size: unsafe {
                 if pg_sys::SPI_tuptable.is_null() {
@@ -74,7 +79,7 @@ impl<'conn> SpiClient<'conn> {
         })
     }
 
-    /// Set up a cursor that will execute the specified query
+    /// Set up a cursor that will execute the specified query.
     ///
     /// Rows may be then fetched using [`SpiCursor::fetch`].
     ///
@@ -93,7 +98,7 @@ impl<'conn> SpiClient<'conn> {
         self.try_open_cursor(query, args).unwrap()
     }
 
-    /// Set up a cursor that will execute the specified query
+    /// Set up a cursor that will execute the specified query.
     ///
     /// Rows may be then fetched using [`SpiCursor::fetch`].
     ///
@@ -106,7 +111,7 @@ impl<'conn> SpiClient<'conn> {
         query.try_open_cursor(self, args)
     }
 
-    /// Set up a cursor that will execute the specified update (mutating) query
+    /// Set up a cursor that will execute the specified update (mutating) query.
     ///
     /// Rows may be then fetched using [`SpiCursor::fetch`].
     ///
@@ -126,7 +131,7 @@ impl<'conn> SpiClient<'conn> {
         self.try_open_cursor_mut(query, args).unwrap()
     }
 
-    /// Set up a cursor that will execute the specified update (mutating) query
+    /// Set up a cursor that will execute the specified update (mutating) query.
     ///
     /// Rows may be then fetched using [`SpiCursor::fetch`].
     ///
@@ -140,7 +145,7 @@ impl<'conn> SpiClient<'conn> {
         query.try_open_cursor(self, args)
     }
 
-    /// Find a cursor in transaction by name
+    /// Find a cursor in transaction by name.
     ///
     /// A cursor for a query can be opened using [`SpiClient::open_cursor`].
     /// Cursor are automatically closed on drop unless [`SpiCursor::detach_into_name`] is used.
@@ -156,35 +161,12 @@ impl<'conn> SpiClient<'conn> {
     }
 }
 
-/// a struct to manage our SPI connection lifetime
-pub(super) struct SpiConnection(PhantomData<*mut ()>);
-
-impl SpiConnection {
-    /// Connect to Postgres' SPI system
-    pub(super) fn connect() -> SpiResult<Self> {
-        // connect to SPI
-        //
-        // SPI_connect() is documented as being able to return SPI_ERROR_CONNECT, so we have to
-        // assume it could.  The truth seems to be that it never actually does.  The one user
-        // of SpiConnection::connect() returns `spi::Result` anyways, so it's no big deal
-        Spi::check_status(unsafe { pg_sys::SPI_connect() })?;
-        Ok(SpiConnection(PhantomData))
-    }
-}
-
-impl Drop for SpiConnection {
-    /// when SpiConnection is dropped, we make sure to disconnect from SPI
+impl Drop for SpiClient<'_> {
+    /// When `SpiClient` is dropped, we make sure to disconnect from SPI.
     fn drop(&mut self) {
-        // best efforts to disconnect from SPI
+        // Best efforts to disconnect from SPI
         // SPI_finish() would only complain if we hadn't previously called SPI_connect() and
         // SpiConnection should prevent that from happening (assuming users don't go unsafe{})
         Spi::check_status(unsafe { pg_sys::SPI_finish() }).ok();
-    }
-}
-
-impl SpiConnection {
-    /// Return a client that with a lifetime scoped to this connection.
-    pub(super) fn client(&self) -> SpiClient<'_> {
-        SpiClient { __marker: PhantomData }
     }
 }

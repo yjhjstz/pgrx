@@ -11,14 +11,6 @@ use pgrx_sql_entity_graph::metadata::{
     ArgumentError, Returns, ReturnsError, SqlMapping, SqlTranslatable,
 };
 
-#[cfg(any(
-    feature = "pg17",
-    feature = "pg16",
-    feature = "pg15",
-    feature = "pg14",
-    feature = "pg13",
-    feature = "pg12"
-))]
 unsafe impl SqlTranslatable for crate::FunctionCallInfoBaseData {
     fn argument_sql() -> Result<SqlMapping, ArgumentError> {
         Ok(SqlMapping::Skip)
@@ -45,6 +37,16 @@ unsafe impl SqlTranslatable for crate::IndexAmRoutine {
         Ok(Returns::One(SqlMapping::literal("internal")))
     }
 }
+
+unsafe impl SqlTranslatable for crate::TableAmRoutine {
+    fn argument_sql() -> Result<SqlMapping, ArgumentError> {
+        Ok(SqlMapping::literal("internal"))
+    }
+    fn return_sql() -> Result<Returns, ReturnsError> {
+        Ok(Returns::One(SqlMapping::literal("internal")))
+    }
+}
+
 unsafe impl SqlTranslatable for crate::FdwRoutine {
     fn argument_sql() -> Result<SqlMapping, ArgumentError> {
         Ok(SqlMapping::literal("fdw_handler"))

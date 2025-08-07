@@ -65,7 +65,7 @@ pub unsafe trait ArgAbi<'fcx>: Sized {
     ///
     /// # Safety
     /// - The argument's datum must have the matching "logical type" that can be "unboxed" from the
-    /// datum's object type.
+    ///   datum's object type.
     /// - Calling this with a null argument and a non-null type is *undefined behavior*.
     unsafe fn unbox_arg_unchecked(arg: Arg<'_, 'fcx>) -> Self;
 
@@ -73,7 +73,7 @@ pub unsafe trait ArgAbi<'fcx>: Sized {
     ///
     /// # Safety
     /// - The argument's datum must have the matching "logical type" that can be "unboxed" from the
-    /// datum's object type.
+    ///   datum's object type.
     /// - Calling this with a null argument and a non-null type is *undefined behavior*.
     ///
     /// # Note to implementers
@@ -134,7 +134,7 @@ unsafe impl<'fcx, T> ArgAbi<'fcx> for crate::PgBox<T> {
         let index = arg.index();
         unsafe {
             Self::from_datum(arg.2.value, arg.is_null())
-                .unwrap_or_else(|| panic!("argument {} must not be null", index))
+                .unwrap_or_else(|| panic!("argument {index} must not be null"))
         }
     }
 }
@@ -144,7 +144,7 @@ unsafe impl<'fcx> ArgAbi<'fcx> for PgHeapTuple<'fcx, AllocatedByRust> {
         let index = arg.index();
         unsafe {
             FromDatum::from_datum(arg.2.value, arg.is_null())
-                .unwrap_or_else(|| panic!("argument {} must not be null", index))
+                .unwrap_or_else(|| panic!("argument {index} must not be null"))
         }
     }
 }
@@ -189,7 +189,7 @@ where
         let index = arg.index();
         unsafe {
             arg.unbox_arg_using_from_datum()
-                .unwrap_or_else(|| panic!("argument {} must not be null", index))
+                .unwrap_or_else(|| panic!("argument {index} must not be null"))
         }
     }
 }
@@ -265,7 +265,7 @@ argue_from_datum! { 'fcx; i8, i16, i32, i64, f32, f64, bool, char, String, Vec<u
 argue_from_datum! { 'fcx; Date, Interval, Time, TimeWithTimeZone, Timestamp, TimestampWithTimeZone }
 argue_from_datum! { 'fcx; AnyArray, AnyElement, AnyNumeric }
 argue_from_datum! { 'fcx; Inet, Internal, Json, JsonB, Uuid, PgRelation }
-argue_from_datum! { 'fcx; pg_sys::BOX, pg_sys::ItemPointerData, pg_sys::Oid, pg_sys::Point }
+argue_from_datum! { 'fcx; pg_sys::BOX, pg_sys::ItemPointerData, pg_sys::Oid, pg_sys::Point, pg_sys::TransactionId }
 // We could use the upcoming impl of ArgAbi for `&'fcx T where T: ?Sized + BorrowDatum`
 // to support these types by implementing BorrowDatum for them also, but we reject this.
 // It would greatly complicate other users of BorrowDatum like FlatArray, which want all impls
@@ -469,16 +469,14 @@ where
     }
 
     unsafe fn fill_fcinfo_fcx(&self, fcinfo: pg_sys::FunctionCallInfo) {
-        match self {
-            Ok(value) => unsafe { value.fill_fcinfo_fcx(fcinfo) },
-            Err(_) => (),
+        if let Ok(value) = self {
+            unsafe { value.fill_fcinfo_fcx(fcinfo) }
         }
     }
 
     unsafe fn move_into_fcinfo_fcx(self, fcinfo: pg_sys::FunctionCallInfo) {
-        match self {
-            Ok(value) => unsafe { value.move_into_fcinfo_fcx(fcinfo) },
-            Err(_) => (),
+        if let Ok(value) = self {
+            unsafe { value.move_into_fcinfo_fcx(fcinfo) }
         }
     }
 
@@ -522,7 +520,7 @@ unsafe impl BoxRet for f64 {
     }
 }
 
-unsafe impl<'a> BoxRet for &'a [u8] {
+unsafe impl BoxRet for &[u8] {
     unsafe fn box_into<'fcx>(self, fcinfo: &mut FcInfo<'fcx>) -> Datum<'fcx> {
         match self.into_datum() {
             Some(datum) => unsafe { fcinfo.return_raw_datum(datum) },
@@ -531,7 +529,7 @@ unsafe impl<'a> BoxRet for &'a [u8] {
     }
 }
 
-unsafe impl<'a> BoxRet for &'a str {
+unsafe impl BoxRet for &str {
     unsafe fn box_into<'fcx>(self, fcinfo: &mut FcInfo<'fcx>) -> Datum<'fcx> {
         match self.into_datum() {
             Some(datum) => unsafe { fcinfo.return_raw_datum(datum) },
@@ -540,7 +538,7 @@ unsafe impl<'a> BoxRet for &'a str {
     }
 }
 
-unsafe impl<'a> BoxRet for &'a CStr {
+unsafe impl BoxRet for &CStr {
     unsafe fn box_into<'fcx>(self, fcinfo: &mut FcInfo<'fcx>) -> Datum<'fcx> {
         match self.into_datum() {
             Some(datum) => unsafe { fcinfo.return_raw_datum(datum) },
@@ -566,7 +564,7 @@ impl_repackage_into_datum! {
     String, CString, Vec<u8>, char,
     Json, JsonB, Inet, Uuid, AnyNumeric, AnyArray, AnyElement, Internal,
     Date, Interval, Time, TimeWithTimeZone, Timestamp, TimestampWithTimeZone,
-    pg_sys::BOX, pg_sys::ItemPointerData, pg_sys::Oid, pg_sys::Point
+    pg_sys::BOX, pg_sys::ItemPointerData, pg_sys::Oid, pg_sys::Point, pg_sys::TransactionId
 }
 
 unsafe impl<const P: u32, const S: u32> BoxRet for Numeric<P, S> {
@@ -611,7 +609,7 @@ unsafe impl<T: Copy> BoxRet for PgVarlena<T> {
     }
 }
 
-unsafe impl<'mcx, A> BoxRet for PgHeapTuple<'mcx, A>
+unsafe impl<A> BoxRet for PgHeapTuple<'_, A>
 where
     A: WhoAllocated,
 {
@@ -746,7 +744,7 @@ impl<'fcx> FcInfo<'fcx> {
     pub fn get_collation(&self) -> Option<pg_sys::Oid> {
         // SAFETY: see FcInfo::from_ptr
         let fcinfo = unsafe { self.0.as_mut() }.unwrap();
-        (fcinfo.fncollation.as_u32() != 0).then_some(fcinfo.fncollation)
+        (fcinfo.fncollation.to_u32() != 0).then_some(fcinfo.fncollation)
     }
 
     /// Retrieve the type (as an Oid) of argument number `num`.
@@ -806,7 +804,7 @@ impl<'fcx> FcInfo<'fcx> {
     pub unsafe fn init_multi_func_call(&mut self) -> &'fcx mut pg_sys::FuncCallContext {
         unsafe {
             let fcx: *mut pg_sys::FuncCallContext = pg_sys::init_MultiFuncCall(self.0);
-            debug_assert!(fcx.is_null() == false);
+            debug_assert!(!fcx.is_null());
             &mut *fcx
         }
     }
@@ -820,7 +818,7 @@ impl<'fcx> FcInfo<'fcx> {
     pub(crate) unsafe fn deref_fcx(&mut self) -> &'fcx mut pg_sys::FuncCallContext {
         unsafe {
             let fcx: *mut pg_sys::FuncCallContext = (*(*self.0).flinfo).fn_extra.cast();
-            debug_assert!(fcx.is_null() == false);
+            debug_assert!(!fcx.is_null());
             &mut *fcx
         }
     }
@@ -863,7 +861,7 @@ impl<'fcx> FcInfo<'fcx> {
 // TODO: rebadge this as AnyElement
 pub struct Arg<'a, 'fcx>(&'a FcInfo<'fcx>, usize, &'a pg_sys::NullableDatum);
 
-impl<'a, 'fcx> Arg<'a, 'fcx> {
+impl<'fcx> Arg<'_, 'fcx> {
     /// # Performance note
     /// This uses an FFI call to obtain the Oid, so avoid calling it if not necessary.
     pub fn raw_oid(&self) -> pg_sys::Oid {
@@ -887,9 +885,9 @@ impl<'a, 'fcx> Arg<'a, 'fcx> {
 
     /// # Safety
     /// - The argument's datum must have the matching "logical type" that can be "unboxed" from the
-    /// datum's object type.
+    ///   datum's object type.
     /// - If `T` cannot represent null arguments, calling this if the next arg is null is
-    /// *undefined behavior*.
+    ///   *undefined behavior*.
     /// - If `T` is pass-by-reference, calling this if the next arg is null is *undefined behavior*.
     pub unsafe fn unbox_unchecked<T: ArgAbi<'fcx>>(self) -> T {
         unsafe { <T as ArgAbi<'fcx>>::unbox_arg_unchecked(self) }
@@ -925,9 +923,9 @@ impl<'a, 'fcx> Args<'a, 'fcx> {
 
     /// # Safety
     /// - The argument's datum must have the matching "logical type" that can be "unboxed" from the
-    /// datum's object type.
+    ///   datum's object type.
     /// - In particular, if `T` cannot represent null arguments, calling this if the next arg is null is
-    /// *undefined behavior*.
+    ///   *undefined behavior*.
     pub unsafe fn next_arg_unchecked<T: ArgAbi<'fcx>>(&mut self) -> Option<T> {
         if T::is_virtual_arg() {
             // SAFETY: trivial condition
@@ -940,7 +938,7 @@ impl<'a, 'fcx> Args<'a, 'fcx> {
 
     /// # Safety
     /// - The argument's datum must have the matching "logical type" that can be "unboxed" from the
-    /// datum's object type.
+    ///   datum's object type.
     pub unsafe fn next_arg<T: ArgAbi<'fcx>>(&mut self) -> Option<Nullable<T>> {
         if T::is_virtual_arg() {
             // SAFETY: trivial condition
@@ -968,7 +966,7 @@ impl<'fcx> ReturnSetInfoWrapper<'fcx> {
     /// [`pg_sys::ReturnSetInfo`] pointer.  This is your responsibility.
     #[inline]
     pub unsafe fn from_ptr(retinfo: *mut pg_sys::ReturnSetInfo) -> ReturnSetInfoWrapper<'fcx> {
-        let _nullptr_check = NonNull::new(retinfo).expect("fcinfo pointer must be non-null");
+        let _nullptr_check = NonNull::new(retinfo).expect("retinfo pointer must be non-null");
         Self(retinfo, PhantomData)
     }
     /*

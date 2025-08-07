@@ -10,26 +10,26 @@
 
 [package]
 name = "pgrx-pg-sys"
-version = "0.12.7"
-authors = ["PgCentral Foundation, Inc. <contact@pgcentral.org>"]
-license = "MIT"
+version = "0.16.0"
+authors.workspace = true
+license.workspace = true
 description = "Generated Rust bindings for Postgres internals, for use with 'pgrx'"
-homepage = "https://github.com/pgcentralfoundation/pgrx/"
-repository = "https://github.com/pgcentralfoundation/pgrx/"
+homepage.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/pgrx-pg-sys"
 readme = "README.md"
-edition = "2021"
+edition.workspace = true
 include = ["src/**/*", "README.md", "include/*", "pgrx-cshim.c", "bindgen.rs"]
 build = "bindgen.rs"
 
 [features]
 default = []
-pg12 = []
 pg13 = []
 pg14 = []
 pg15 = []
 pg16 = []
 pg17 = []
+pg18 = []
 cshim = []
 cbdb = []
 

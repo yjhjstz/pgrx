@@ -22,6 +22,7 @@ mod options;
 
 pub use aggregate_type::{AggregateType, AggregateTypeList};
 pub use options::{FinalizeModify, ParallelOption};
+use syn::PathArguments;
 
 use crate::enrich::CodeEnrichment;
 use crate::enrich::ToEntityGraphTokens;
@@ -83,6 +84,7 @@ pub struct PgAggregate {
     item_impl: ItemImpl,
     name: Expr,
     target_ident: Ident,
+    snake_case_target_ident: Ident,
     pg_externs: Vec<ItemFn>,
     // Note these should not be considered *writable*, they're snapshots from construction.
     type_args: AggregateTypeList,
@@ -108,6 +110,71 @@ pub struct PgAggregate {
     to_sql_config: ToSqlConfig,
 }
 
+fn extract_generic_from_trait(item_impl: &ItemImpl) -> Result<&Type, syn::Error> {
+    let (_, path, _) = item_impl.trait_.as_ref().ok_or_else(|| {
+        syn::Error::new_spanned(
+            item_impl,
+            "`#[pg_aggregate]` can only be used on `impl` blocks for a trait.",
+        )
+    })?;
+
+    let last_segment = path
+        .segments
+        .last()
+        .ok_or_else(|| syn::Error::new_spanned(path, "Trait path is empty or malformed."))?;
+
+    if last_segment.ident != "Aggregate" {
+        return Err(syn::Error::new_spanned(
+            last_segment.ident.clone(),
+            "`#[pg_aggregate]` only works with the `Aggregate` trait.",
+        ));
+    }
+
+    let args = match &last_segment.arguments {
+        PathArguments::AngleBracketed(args) => args,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                last_segment.ident.clone(),
+                "`Aggregate` trait must have angle-bracketed generic arguments (e.g., `Aggregate<T>`). Missing generic argument.",
+            ));
+        }
+    };
+
+    let generic_arg = args.args.first().ok_or_else(|| {
+        syn::Error::new_spanned(
+            args,
+            "`Aggregate` trait requires at least one generic argument (e.g., `Aggregate<T>`).",
+        )
+    })?;
+
+    if let syn::GenericArgument::Type(ty) = generic_arg {
+        Ok(ty)
+    } else {
+        Err(syn::Error::new_spanned(
+            generic_arg,
+            "Expected a type as the generic argument for `Aggregate` (e.g., `Aggregate<MyType>`).",
+        ))
+    }
+}
+
+fn get_generic_type_name(ty: &syn::Type) -> Result<String, syn::Error> {
+    if let Type::Path(type_path) = ty {
+        if let Some(ident) = type_path.path.segments.last().map(|s| &s.ident) {
+            let ident = ident.to_string();
+
+            match ident.as_str() {
+                "!" => Ok("never".to_string()),
+                "()" => Ok("unit".to_string()),
+                _ => Ok(ident),
+            }
+        } else {
+            Err(syn::Error::new_spanned(ty, "Generic type path is empty or malformed."))
+        }
+    } else {
+        Err(syn::Error::new_spanned(ty, "Expected a path type for the generic argument."))
+    }
+}
+
 impl PgAggregate {
     pub fn new(mut item_impl: ItemImpl) -> Result<CodeEnrichment<Self>, syn::Error> {
         let to_sql_config =
@@ -115,54 +182,21 @@ impl PgAggregate {
         let target_path = get_target_path(&item_impl)?;
         let target_ident = get_target_ident(&target_path)?;
 
-        let snake_case_target_ident =
-            Ident::new(&target_ident.to_string().to_case(Case::Snake), target_ident.span());
-        crate::ident_is_acceptable_to_postgres(&snake_case_target_ident)?;
-
         let mut pg_externs = Vec::default();
         // We want to avoid having multiple borrows, so we take a snapshot to scan from,
         // and mutate the actual one.
         let item_impl_snapshot = item_impl.clone();
 
-        if let Some((_, ref path, _)) = item_impl.trait_ {
-            // TODO: Consider checking the path if there is more than one segment to make sure it's pgrx.
-            if let Some(last) = path.segments.last() {
-                if last.ident != "Aggregate" {
-                    return Err(syn::Error::new(
-                        last.ident.span(),
-                        "`#[pg_aggregate]` only works with the `Aggregate` trait.",
-                    ));
-                }
-            }
-        }
+        let generic_type = extract_generic_from_trait(&item_impl)?.clone();
+        let generic_type_name = get_generic_type_name(&generic_type)?;
 
-        let name = match get_impl_const_by_name(&item_impl_snapshot, "NAME") {
-            Some(item_const) => match &item_const.expr {
-                syn::Expr::Lit(ref expr) => {
-                    if let syn::Lit::Str(_) = &expr.lit {
-                        item_const.expr.clone()
-                    } else {
-                        return Err(syn::Error::new(
-                            expr.span(),
-                            "`NAME` must be a `&'static str` for Aggregate implementations.",
-                        ));
-                    }
-                }
-                e => {
-                    return Err(syn::Error::new(
-                        e.span(),
-                        "`NAME` must be a `&'static str` for Aggregate implementations.",
-                    ));
-                }
-            },
-            None => {
-                item_impl.items.push(parse_quote! {
-                    const NAME: &'static str = stringify!(Self);
-                });
-                parse_quote! {
-                    stringify!(#target_ident)
-                }
-            }
+        let snake_case_target_ident =
+            format!("{target_ident}_{generic_type_name}").to_case(Case::Snake);
+        let snake_case_target_ident = Ident::new(&snake_case_target_ident, target_ident.span());
+        crate::ident_is_acceptable_to_postgres(&snake_case_target_ident)?;
+
+        let name = parse_quote! {
+            <#generic_type as ::pgrx::aggregate::ToAggregateName>::NAME
         };
 
         // `State` is an optional value, we default to `Self`.
@@ -293,7 +327,7 @@ impl PgAggregate {
 
         let fn_state_name = if let Some(found) = fn_state {
             let fn_name =
-                Ident::new(&format!("{}_state", snake_case_target_ident), found.sig.ident.span());
+                Ident::new(&format!("{snake_case_target_ident}_state"), found.sig.ident.span());
             let pg_extern_attr = pg_extern_attr(found);
 
             pg_externs.push(parse_quote! {
@@ -301,9 +335,9 @@ impl PgAggregate {
                 #pg_extern_attr
                 fn #fn_name(this: #type_state_without_self, #(#args_with_names),*, fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> #type_state_without_self {
                     unsafe {
-                        <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                        <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                             fcinfo,
-                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::state(this, (#(#arg_names),*), fcinfo)
+                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::state(this, (#(#arg_names),*), fcinfo)
                         )
                     }
                 }
@@ -319,16 +353,16 @@ impl PgAggregate {
         let fn_combine = get_impl_func_by_name(&item_impl_snapshot, "combine");
         let fn_combine_name = if let Some(found) = fn_combine {
             let fn_name =
-                Ident::new(&format!("{}_combine", snake_case_target_ident), found.sig.ident.span());
+                Ident::new(&format!("{snake_case_target_ident}_combine"), found.sig.ident.span());
             let pg_extern_attr = pg_extern_attr(found);
             pg_externs.push(parse_quote! {
                 #[allow(non_snake_case, clippy::too_many_arguments)]
                 #pg_extern_attr
                 fn #fn_name(this: #type_state_without_self, v: #type_state_without_self, fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> #type_state_without_self {
                     unsafe {
-                        <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                        <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                             fcinfo,
-                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::combine(this, v, fcinfo)
+                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::combine(this, v, fcinfo)
                         )
                     }
                 }
@@ -345,10 +379,8 @@ impl PgAggregate {
 
         let fn_finalize = get_impl_func_by_name(&item_impl_snapshot, "finalize");
         let fn_finalize_name = if let Some(found) = fn_finalize {
-            let fn_name = Ident::new(
-                &format!("{}_finalize", snake_case_target_ident),
-                found.sig.ident.span(),
-            );
+            let fn_name =
+                Ident::new(&format!("{snake_case_target_ident}_finalize"), found.sig.ident.span());
             let pg_extern_attr = pg_extern_attr(found);
 
             if !direct_args_with_names.is_empty() {
@@ -357,9 +389,9 @@ impl PgAggregate {
                     #pg_extern_attr
                     fn #fn_name(this: #type_state_without_self, #(#direct_args_with_names),*, fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> #type_finalize {
                         unsafe {
-                            <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                            <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                                 fcinfo,
-                                move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::finalize(this, (#(#direct_arg_names),*), fcinfo)
+                                move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::finalize(this, (#(#direct_arg_names),*), fcinfo)
                             )
                         }
                     }
@@ -370,9 +402,9 @@ impl PgAggregate {
                     #pg_extern_attr
                     fn #fn_name(this: #type_state_without_self, fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> #type_finalize {
                         unsafe {
-                            <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                            <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                                 fcinfo,
-                                move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::finalize(this, (), fcinfo)
+                                move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::finalize(this, (), fcinfo)
                             )
                         }
                     }
@@ -391,16 +423,16 @@ impl PgAggregate {
         let fn_serial = get_impl_func_by_name(&item_impl_snapshot, "serial");
         let fn_serial_name = if let Some(found) = fn_serial {
             let fn_name =
-                Ident::new(&format!("{}_serial", snake_case_target_ident), found.sig.ident.span());
+                Ident::new(&format!("{snake_case_target_ident}_serial"), found.sig.ident.span());
             let pg_extern_attr = pg_extern_attr(found);
             pg_externs.push(parse_quote! {
                 #[allow(non_snake_case, clippy::too_many_arguments)]
                 #pg_extern_attr
                 fn #fn_name(this: #type_state_without_self, fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> Vec<u8> {
                     unsafe {
-                        <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                        <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                             fcinfo,
-                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::serial(this, fcinfo)
+                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::serial(this, fcinfo)
                         )
                     }
                 }
@@ -417,19 +449,17 @@ impl PgAggregate {
 
         let fn_deserial = get_impl_func_by_name(&item_impl_snapshot, "deserial");
         let fn_deserial_name = if let Some(found) = fn_deserial {
-            let fn_name = Ident::new(
-                &format!("{}_deserial", snake_case_target_ident),
-                found.sig.ident.span(),
-            );
+            let fn_name =
+                Ident::new(&format!("{snake_case_target_ident}_deserial"), found.sig.ident.span());
             let pg_extern_attr = pg_extern_attr(found);
             pg_externs.push(parse_quote! {
                 #[allow(non_snake_case, clippy::too_many_arguments)]
                 #pg_extern_attr
                 fn #fn_name(this: #type_state_without_self, buf: Vec<u8>, internal: ::pgrx::pgbox::PgBox<#type_state_without_self>, fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> ::pgrx::pgbox::PgBox<#type_state_without_self> {
                     unsafe {
-                        <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                        <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                             fcinfo,
-                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::deserial(this, buf, internal, fcinfo)
+                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::deserial(this, buf, internal, fcinfo)
                         )
                     }
                 }
@@ -447,7 +477,7 @@ impl PgAggregate {
         let fn_moving_state = get_impl_func_by_name(&item_impl_snapshot, "moving_state");
         let fn_moving_state_name = if let Some(found) = fn_moving_state {
             let fn_name = Ident::new(
-                &format!("{}_moving_state", snake_case_target_ident),
+                &format!("{snake_case_target_ident}_moving_state"),
                 found.sig.ident.span(),
             );
             let pg_extern_attr = pg_extern_attr(found);
@@ -461,9 +491,9 @@ impl PgAggregate {
                     fcinfo: ::pgrx::pg_sys::FunctionCallInfo,
                 ) -> #type_moving_state {
                     unsafe {
-                        <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                        <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                             fcinfo,
-                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::moving_state(mstate, (#(#arg_names),*), fcinfo)
+                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::moving_state(mstate, (#(#arg_names),*), fcinfo)
                         )
                     }
                 }
@@ -472,10 +502,10 @@ impl PgAggregate {
         } else {
             item_impl.items.push(parse_quote! {
                 fn moving_state(
-                    _mstate: <#target_path as ::pgrx::aggregate::Aggregate>::MovingState,
+                    _mstate: <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::MovingState,
                     _v: Self::Args,
                     _fcinfo: ::pgrx::pg_sys::FunctionCallInfo,
-                ) -> <#target_path as ::pgrx::aggregate::Aggregate>::MovingState {
+                ) -> <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::MovingState {
                     unimplemented!("Call to moving_state on an aggregate which does not support it.")
                 }
             });
@@ -486,7 +516,7 @@ impl PgAggregate {
             get_impl_func_by_name(&item_impl_snapshot, "moving_state_inverse");
         let fn_moving_state_inverse_name = if let Some(found) = fn_moving_state_inverse {
             let fn_name = Ident::new(
-                &format!("{}_moving_state_inverse", snake_case_target_ident),
+                &format!("{snake_case_target_ident}_moving_state_inverse"),
                 found.sig.ident.span(),
             );
             let pg_extern_attr = pg_extern_attr(found);
@@ -499,9 +529,9 @@ impl PgAggregate {
                     fcinfo: ::pgrx::pg_sys::FunctionCallInfo,
                 ) -> #type_moving_state {
                     unsafe {
-                        <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                        <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                             fcinfo,
-                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::moving_state_inverse(mstate, (#(#arg_names),*), fcinfo)
+                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::moving_state_inverse(mstate, (#(#arg_names),*), fcinfo)
                         )
                     }
                 }
@@ -523,7 +553,7 @@ impl PgAggregate {
         let fn_moving_finalize = get_impl_func_by_name(&item_impl_snapshot, "moving_finalize");
         let fn_moving_finalize_name = if let Some(found) = fn_moving_finalize {
             let fn_name = Ident::new(
-                &format!("{}_moving_finalize", snake_case_target_ident),
+                &format!("{snake_case_target_ident}_moving_finalize"),
                 found.sig.ident.span(),
             );
             let pg_extern_attr = pg_extern_attr(found);
@@ -535,9 +565,9 @@ impl PgAggregate {
                 #pg_extern_attr
                 fn #fn_name(mstate: #type_moving_state, #(#direct_args_with_names),* #maybe_comma fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> #type_finalize {
                     unsafe {
-                        <#target_path as ::pgrx::aggregate::Aggregate>::in_memory_context(
+                        <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::in_memory_context(
                             fcinfo,
-                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate>::moving_finalize(mstate, (#(#direct_arg_names),*), fcinfo)
+                            move |_context| <#target_path as ::pgrx::aggregate::Aggregate::<#generic_type>>::moving_finalize(mstate, (#(#direct_arg_names),*), fcinfo)
                         )
                     }
                 }
@@ -557,6 +587,7 @@ impl PgAggregate {
             target_ident,
             pg_externs,
             name,
+            snake_case_target_ident,
             type_args: type_args_value,
             type_ordered_set_args: type_ordered_set_args_value,
             type_moving_state: type_moving_state_value,
@@ -617,10 +648,8 @@ impl PgAggregate {
 impl ToEntityGraphTokens for PgAggregate {
     fn to_entity_graph_tokens(&self) -> TokenStream2 {
         let target_ident = &self.target_ident;
-        let snake_case_target_ident =
-            Ident::new(&target_ident.to_string().to_case(Case::Snake), target_ident.span());
         let sql_graph_entity_fn_name = syn::Ident::new(
-            &format!("__pgrx_internals_aggregate_{}", snake_case_target_ident),
+            &format!("__pgrx_internals_aggregate_{}", self.snake_case_target_ident),
             target_ident.span(),
         );
 
@@ -651,7 +680,7 @@ impl ToEntityGraphTokens for PgAggregate {
         let to_sql_config = &self.to_sql_config;
 
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             #[doc(hidden)]
             #[allow(unknown_lints, clippy::no_mangle_with_rust_abi)]
             pub extern "Rust" fn #sql_graph_entity_fn_name() -> ::pgrx::pgrx_sql_entity_graph::SqlGraphEntity {
@@ -694,6 +723,7 @@ impl ToRustCodeTokens for PgAggregate {
     fn to_rust_code_tokens(&self) -> TokenStream2 {
         let impl_item = &self.item_impl;
         let pg_externs = self.pg_externs.iter();
+
         quote! {
             #impl_item
             #(#pg_externs)*
@@ -719,7 +749,7 @@ fn get_target_ident(path: &Path) -> Result<Ident, syn::Error> {
 
 fn get_target_path(item_impl: &ItemImpl) -> Result<Path, syn::Error> {
     let target_ident = match &*item_impl.self_ty {
-        syn::Type::Path(ref type_path) => {
+        syn::Type::Path(type_path) => {
             let last_segment = type_path.path.segments.last().ok_or_else(|| {
                 syn::Error::new(
                     type_path.span(),
@@ -872,7 +902,7 @@ fn get_const_litstr(item: &ImplItemConst) -> syn::Result<Option<String>> {
 }
 
 fn remap_self_to_target(ty: &mut syn::Type, target: &syn::Ident) {
-    if let Type::Path(ref mut ty_path) = ty {
+    if let Type::Path(ty_path) = ty {
         for segment in ty_path.path.segments.iter_mut() {
             if segment.ident == "Self" {
                 segment.ident = target.clone()
@@ -927,10 +957,9 @@ mod tests {
     fn agg_required_only() -> Result<()> {
         let tokens: ItemImpl = parse_quote! {
             #[pg_aggregate]
-            impl Aggregate for DemoAgg {
+            impl Aggregate<DemoName> for DemoAgg {
                 type State = PgVarlena<Self>;
                 type Args = i32;
-                const NAME: &'static str = "DEMO";
 
                 fn state(mut current: Self::State, arg: Self::Args) -> Self::State {
                     todo!()
@@ -945,7 +974,7 @@ mod tests {
         assert_eq!(agg.0.pg_externs.len(), 1);
         // That extern should be named specifically:
         let extern_fn = &agg.0.pg_externs[0];
-        assert_eq!(extern_fn.sig.ident.to_string(), "demo_agg_state");
+        assert_eq!(extern_fn.sig.ident.to_string(), "demo_agg_demo_name_state");
         // It should be possible to generate entity tokens.
         let _ = agg.to_token_stream();
         Ok(())
@@ -955,13 +984,11 @@ mod tests {
     fn agg_all_options() -> Result<()> {
         let tokens: ItemImpl = parse_quote! {
             #[pg_aggregate]
-            impl Aggregate for DemoAgg {
+            impl Aggregate<DemoName> for DemoAgg {
                 type State = PgVarlena<Self>;
                 type Args = i32;
                 type OrderBy = i32;
                 type MovingState = i32;
-
-                const NAME: &'static str = "DEMO";
 
                 const PARALLEL: Option<ParallelOption> = Some(ParallelOption::Safe);
                 const FINALIZE_MODIFY: Option<FinalizeModify> = Some(FinalizeModify::ReadWrite);
@@ -1011,7 +1038,7 @@ mod tests {
         assert_eq!(agg.0.pg_externs.len(), 8);
         // That extern should be named specifically:
         let extern_fn = &agg.0.pg_externs[0];
-        assert_eq!(extern_fn.sig.ident.to_string(), "demo_agg_state");
+        assert_eq!(extern_fn.sig.ident.to_string(), "demo_agg_demo_name_state");
         // It should be possible to generate entity tokens.
         let _ = agg.to_token_stream();
         Ok(())

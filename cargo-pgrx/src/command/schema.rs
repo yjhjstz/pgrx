@@ -12,7 +12,8 @@ use crate::manifest::{get_package_manifest, pg_config_and_version};
 use crate::profile::CargoProfile;
 use crate::CommandExecute;
 use cargo_toml::Manifest;
-use eyre::WrapErr;
+use eyre::{eyre, WrapErr};
+use object::read::macho::MachOFatFile32;
 use owo_colors::OwoColorize;
 use pgrx_pg_config::cargo::PgrxManifestExt;
 use pgrx_pg_config::{get_target_dir, PgConfig, Pgrx};
@@ -33,7 +34,7 @@ pub(crate) struct Schema {
     /// Build in test mode (for `cargo pgrx test`)
     #[clap(long)]
     test: bool,
-    /// Do you want to run against pg12, pg13, pg14, pg15, pg16, or pg17?
+    /// Do you want to run against pg13, pg14, pg15, pg16, pg17, or pg18?
     pg_version: Option<String>,
     /// Compile for release mode (default is debug)
     #[clap(long, short)]
@@ -52,6 +53,8 @@ pub(crate) struct Schema {
     /// A path to output a produced GraphViz DOT file
     #[clap(long, short, value_parser)]
     dot: Option<PathBuf>,
+    #[clap(long)]
+    target: Option<String>,
     #[clap(from_global, action = ArgAction::Count)]
     verbose: u8,
     /// Skip building a fresh extension shared object.
@@ -100,6 +103,7 @@ impl CommandExecute for Schema {
             &profile,
             self.test,
             &self.features,
+            self.target.as_deref(),
             self.out.as_ref(),
             self.dot,
             log_level,
@@ -125,6 +129,7 @@ pub(crate) fn generate_schema(
     profile: &CargoProfile,
     is_test: bool,
     features: &clap_cargo::Features,
+    target: Option<&str>,
     path: Option<impl AsRef<std::path::Path>>,
     dot: Option<impl AsRef<std::path::Path>>,
     log_level: Option<String>,
@@ -156,11 +161,12 @@ pub(crate) fn generate_schema(
             is_test,
             &features_arg,
             &flags,
+            target,
             &package_name,
         )?;
     };
 
-    let symbols = compute_symbols(profile, &lib_filename)?;
+    let symbols = compute_symbols(profile, &lib_filename, target)?;
 
     let mut out_path = None;
     if let Some(path) = path.as_ref() {
@@ -209,19 +215,27 @@ pub(crate) fn generate_schema(
         &flags,
         embed.path(),
         &package_name,
+        &manifest,
     )?;
 
-    compute_sql(&package_name, &manifest)?;
+    compute_sql(&manifest)?;
 
     Ok(())
 }
 
-fn compute_symbols(profile: &CargoProfile, lib_filename: &str) -> eyre::Result<Vec<String>> {
+fn compute_symbols(
+    profile: &CargoProfile,
+    lib_filename: &str,
+    target: Option<&str>,
+) -> eyre::Result<Vec<String>> {
     use object::Object;
     use std::collections::HashSet;
 
     // Inspect the symbol table for a list of `__pgrx_internals` we should have the generator call
     let mut lib_so = get_target_dir()?;
+    if let Some(target) = target {
+        lib_so.push(target);
+    }
     lib_so.push(profile.target_subdir());
     lib_so.push(lib_filename);
 
@@ -312,6 +326,7 @@ fn first_build(
     is_test: bool,
     features_arg: &str,
     flags: &str,
+    target: Option<&str>,
     package_name: &str,
 ) -> eyre::Result<()> {
     let mut command = crate::env::cargo();
@@ -328,7 +343,7 @@ fn first_build(
     }
 
     command.arg("--package");
-    command.arg(format!("{package_name}"));
+    command.arg(package_name);
 
     if let Some(user_manifest_path) = user_manifest_path.as_ref() {
         command.arg("--manifest-path");
@@ -358,7 +373,12 @@ fn first_build(
         command.arg(arg);
     }
 
-    let command_str = format!("{:?}", command);
+    if let Some(target) = target {
+        command.arg("--target");
+        command.arg(target);
+    }
+
+    let command_str = format!("{command:?}");
     eprintln!(
         "{} for SQL generation with features `{}`",
         "    Building".bold().green(),
@@ -367,7 +387,7 @@ fn first_build(
 
     tracing::debug!(command = %command_str, "Running");
     let cargo_output =
-        command.output().wrap_err_with(|| format!("failed to spawn cargo: {}", command_str))?;
+        command.output().wrap_err_with(|| format!("failed to spawn cargo: {command_str}"))?;
     tracing::trace!(status_code = %cargo_output.status, command = %command_str, "Finished");
 
     if !cargo_output.status.success() {
@@ -409,7 +429,7 @@ fn compute_codegen(
         for name in symbols.iter() {
             let name_ident = Ident::new(name, Span::call_site());
             out.extend(quote::quote! {
-                extern "Rust" {
+                unsafe extern "Rust" {
                     fn #name_ident() -> ::pgrx::pgrx_sql_entity_graph::SqlGraphEntity;
                 }
                 let entity = unsafe { #name_ident() };
@@ -458,6 +478,7 @@ fn compute_codegen(
         out
     };
     Ok(quote::quote! {
+        #[doc(hidden)]
         pub fn main() {
             #inputs
             #build
@@ -475,6 +496,7 @@ fn second_build(
     flags: &str,
     embed_path: impl AsRef<Path>,
     package_name: &str,
+    manifest: &Manifest,
 ) -> eyre::Result<()> {
     let mut command = crate::env::cargo();
     command.stdin(Stdio::null());
@@ -485,10 +507,10 @@ fn second_build(
     // The only cargo command respecting our need is `cargo rustc`
     command.arg("rustc");
     command.arg("--bin");
-    command.arg(format!("pgrx_embed_{package_name}"));
+    command.arg(pgrx_embed_name(manifest)?);
 
     command.arg("--package");
-    command.arg(format!("{package_name}"));
+    command.arg(package_name);
 
     if let Some(user_manifest_path) = user_manifest_path.as_ref() {
         command.arg("--manifest-path");
@@ -522,7 +544,7 @@ fn second_build(
 
     command.env("PGRX_EMBED", embed_path.as_ref());
 
-    let command_str = format!("{:?}", command);
+    let command_str = format!("{command:?}");
     eprintln!(
         "{} {}, in debug mode, for SQL generation with features {}",
         "  Rebuilding".bold().green(),
@@ -532,7 +554,7 @@ fn second_build(
 
     tracing::debug!(command = %command_str, "Running");
     let cargo_output =
-        command.output().wrap_err_with(|| format!("failed to spawn cargo: {}", command_str))?;
+        command.output().wrap_err_with(|| format!("failed to spawn cargo: {command_str}"))?;
     tracing::trace!(status_code = %cargo_output.status, command = %command_str, "Finished");
 
     if !cargo_output.status.success() {
@@ -543,10 +565,10 @@ fn second_build(
     Ok(())
 }
 
-fn compute_sql(package_name: &str, manifest: &Manifest) -> eyre::Result<()> {
+fn compute_sql(manifest: &Manifest) -> eyre::Result<()> {
     let mut bin = get_target_dir()?;
     bin.push("debug"); // pgrx_embed_ is always compiled in debug mode
-    bin.push(format!("pgrx_embed_{package_name}"));
+    bin.push(pgrx_embed_name(manifest)?);
 
     let mut command = std::process::Command::new(bin);
     command.stdin(Stdio::inherit());
@@ -559,11 +581,10 @@ fn compute_sql(package_name: &str, manifest: &Manifest) -> eyre::Result<()> {
     });
     command.env("CARGO_PKG_VERSION", cargo_pkg_version);
 
-    let command_str = format!("{:?}", command);
+    let command_str = format!("{command:?}");
     tracing::debug!(command = %command_str, "Running");
-    let embed_output = command
-        .output()
-        .wrap_err_with(|| format!("failed to spawn pgrx_embed: {}", command_str))?;
+    let embed_output =
+        command.output().wrap_err_with(|| format!("failed to spawn pgrx_embed: {command_str}"))?;
     tracing::trace!(status_code = %embed_output.status, command = %command_str, "Finished");
 
     if !embed_output.status.success() {
@@ -575,7 +596,26 @@ fn compute_sql(package_name: &str, manifest: &Manifest) -> eyre::Result<()> {
     Ok(())
 }
 
-fn parse_object(data: &[u8]) -> object::Result<object::File> {
+fn pgrx_embed_name(manifest: &Manifest) -> eyre::Result<String> {
+    fn name_from(s: &str) -> String {
+        format!("pgrx_embed_{s}")
+    }
+
+    let package_name = name_from(&manifest.package_name()?);
+    let lib_name = name_from(&manifest.lib_name()?);
+    (&manifest.bin)
+        .into_iter()
+        .find(|bin| {
+            // As cargo_anifest autofills lib.name if it's empty, it's impossible to
+            // check only against one name. Perhaps, cargo-util-schemas can help with that.
+            bin.name.as_ref().is_some_and(|name| name == &package_name || name == &lib_name)
+        })
+        .map(|bin| bin.name.to_owned())
+        .flatten()
+        .ok_or_else(|| eyre!("Failed to find a pgrx_embed binary."))
+}
+
+fn parse_object(data: &[u8]) -> object::Result<object::File<'_>> {
     let kind = object::FileKind::parse(data)?;
 
     match kind {
@@ -594,7 +634,6 @@ fn parse_object(data: &[u8]) -> object::Result<object::File> {
 }
 
 fn slice_arch32<'a>(data: &'a [u8], arch: &str) -> Option<&'a [u8]> {
-    use object::macho::FatHeader;
     use object::read::macho::FatArch;
     use object::Architecture;
     let target = match arch {
@@ -608,8 +647,8 @@ fn slice_arch32<'a>(data: &'a [u8], arch: &str) -> Option<&'a [u8]> {
         _ => Architecture::Unknown,
     };
 
-    let candidates = FatHeader::parse_arch32(data).ok()?;
-    let architecture = candidates.iter().find(|a| a.architecture() == target)?;
+    let candidates = MachOFatFile32::parse(data).ok()?;
+    let architecture = candidates.arches().iter().find(|a| a.architecture() == target)?;
 
     architecture.data(data).ok()
 }

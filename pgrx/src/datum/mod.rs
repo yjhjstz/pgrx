@@ -171,7 +171,22 @@ impl<'src> DatumWithOid<'src> {
     ///
     /// [`Oid`]: pg_sys::Oid
     pub unsafe fn new<T: IntoDatum>(value: T, oid: pg_sys::Oid) -> Self {
-        Self { datum: value.into_datum().map(|d| Datum(d, PhantomData::default())), oid }
+        Self::new_from_datum(value.into_datum().map(|d| Datum(d, PhantomData)), oid)
+    }
+
+    /// Construct a `DatumWithOid` given an optional [`Datum`] and [`Oid`].
+    ///
+    /// SQL NULL is represented by passing `None` for `datum`.
+    ///
+    /// [`Datum`]: crate::datum::Datum
+    /// [`Oid`]: pg_sys::Oid
+    pub unsafe fn new_from_datum(datum: Option<Datum<'src>>, oid: pg_sys::Oid) -> Self {
+        Self { datum, oid }
+    }
+
+    /// Constructs a `DatumWithOid` representing SQL NULL
+    pub fn null_oid(oid: pg_sys::Oid) -> Self {
+        Self { datum: None, oid }
     }
 
     /// Construct a `DatumWithOid` containing a null value for type `T`.
@@ -181,7 +196,7 @@ impl<'src> DatumWithOid<'src> {
 
     /// Returns an [`Option<Datum>`].
     pub fn datum(&self) -> Option<Datum<'src>> {
-        self.datum.as_ref().map(|d| Datum(d.0, PhantomData::default()))
+        self.datum.as_ref().map(|d| Datum(d.0, PhantomData))
     }
 
     /// Returns an [`Oid`].
@@ -204,3 +219,30 @@ impl<'src, T: IntoDatum> From<T> for DatumWithOid<'src> {
 /// A tagging trait to indicate a user type is also meant to be used by Postgres
 /// Implemented automatically by `#[derive(PostgresType)]`
 pub trait PostgresType {}
+
+/// Creates an array of [`pg_sys::Oid`] with the OID of each provided type
+///
+/// # Examples
+///
+/// ```
+/// use pgrx::{oids_of, datum::IntoDatum};
+///
+/// let oids = oids_of![i32, f64];
+/// assert_eq!(oids[0], i32::type_oid().into());
+/// assert_eq!(oids[1], f64::type_oid().into());
+///
+/// // the usual conversions or coercions are available
+/// let oid_vec = oids_of![i8, i16].to_vec();
+/// let no_oid = &oids_of![];
+/// assert_eq!(no_oid.len(), 0);
+/// ```
+#[macro_export]
+macro_rules! oids_of {
+    () =>(
+        // avoid coercions to an ambiguously-typed array or slice
+        [$crate::pg_sys::PgOid::Invalid; 0]
+    );
+    ($($t:path),+ $(,)?) => (
+        [$($crate::pg_sys::PgOid::from(<$t>::type_oid())),*]
+    );
+}

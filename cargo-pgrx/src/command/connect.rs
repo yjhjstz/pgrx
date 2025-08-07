@@ -22,7 +22,7 @@ use std::path::PathBuf;
 #[derive(clap::Args, Debug)]
 #[clap(author)]
 pub(crate) struct Connect {
-    /// Do you want to run against pg12, pg13, pg14, pg15, pg16, or pg17?
+    /// Do you want to run against pg13, pg14, pg15, pg16, pg17, or pg18?
     #[clap(env = "PG_VERSION")]
     pg_version: Option<String>,
     /// The database to connect to (and create if the first time).  Defaults to a database with the same name as the current extension name
@@ -39,6 +39,8 @@ pub(crate) struct Connect {
     /// Use an existing `pgcli` on the $PATH.
     #[clap(env = "PGRX_PGCLI", long)]
     pgcli: bool,
+    #[clap(long)]
+    valgrind: bool,
 }
 
 impl CommandExecute for Connect {
@@ -79,7 +81,7 @@ impl CommandExecute for Connect {
             }
         };
 
-        connect_psql(&pg_config, &dbname, self.pgcli)
+        connect_psql(&pg_config, &dbname, self.pgcli, self.valgrind)
     }
 }
 
@@ -87,9 +89,14 @@ impl CommandExecute for Connect {
     pg_version = %pg_config.version()?,
     dbname,
 ))]
-pub(crate) fn connect_psql(pg_config: &PgConfig, dbname: &str, pgcli: bool) -> eyre::Result<()> {
+pub(crate) fn connect_psql(
+    pg_config: &PgConfig,
+    dbname: &str,
+    pgcli: bool,
+    use_valgrind: bool,
+) -> eyre::Result<()> {
     // restart postgres
-    start_postgres(pg_config)?;
+    start_postgres(pg_config, &Default::default(), use_valgrind)?;
 
     // create the named database
     if !createdb(pg_config, dbname, false, true, None)? {

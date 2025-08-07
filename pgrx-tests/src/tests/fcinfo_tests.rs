@@ -83,6 +83,11 @@ fn returns_none() -> Option<i32> {
 }
 
 #[pg_extern]
+fn panics() -> Option<i32> {
+    panic!("an error message")
+}
+
+#[pg_extern]
 fn returns_null() -> Nullable<i32> {
     Nullable::Null
 }
@@ -137,6 +142,7 @@ fn fcinfo_not_named_no_arg(fcinfo: pg_sys::FunctionCallInfo) -> i32 {
 }
 
 #[derive(PostgresType, Serialize, Deserialize, Debug, PartialEq)]
+#[pg_binary_protocol]
 #[inoutfuncs]
 pub struct NullStrict {}
 
@@ -153,6 +159,7 @@ impl InOutFuncs for NullStrict {
 }
 
 #[derive(PostgresType, Serialize, Deserialize, Debug, PartialEq)]
+#[pg_binary_protocol]
 #[inoutfuncs]
 pub struct NullError {}
 
@@ -304,6 +311,14 @@ mod tests {
     unsafe fn test_returns_none() {
         let result = direct_pg_extern_function_call::<i32>(super::returns_none_wrapper, &[]);
         assert!(result.is_none())
+    }
+
+    #[pg_test]
+    unsafe fn test_panics() {
+        let r = std::panic::catch_unwind(|| {
+            direct_pg_extern_function_call::<i32>(super::panics_wrapper, &[])
+        });
+        assert!(r.is_err());
     }
 
     #[pg_test]

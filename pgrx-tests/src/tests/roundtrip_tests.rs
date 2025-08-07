@@ -1,9 +1,10 @@
 use super::Complex;
 use pgrx::datum::Date;
-use rand::distributions::{Alphanumeric, Standard};
+use rand::distr::{Alphanumeric, StandardUniform};
 use rand::Rng;
 
 #[derive(pgrx::PostgresType, Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[pg_binary_protocol]
 pub struct RandomData {
     i: u64,
     s: String,
@@ -14,19 +15,19 @@ impl RandomData {
     fn random() -> Self {
         RandomData {
             i: rand::random(),
-            s: rand::thread_rng()
+            s: rand::rng()
                 .sample_iter(Alphanumeric)
-                .take(rand::thread_rng().gen_range(0..=1000))
+                .take(rand::rng().random_range(0..=1000))
                 .map(char::from)
                 .collect(),
-            a: rand::thread_rng()
-                .sample_iter(Standard)
-                .take(rand::thread_rng().gen_range(0..=1000))
+            a: rand::rng()
+                .sample_iter(StandardUniform)
+                .take(rand::rng().random_range(0..=1000))
                 .map(|_: u32| {
                     Date::new(
-                        rand::thread_rng().gen_range(1..=3000),
-                        rand::thread_rng().gen_range(1..=12),
-                        rand::thread_rng().gen_range(1..=28),
+                        rand::rng().random_range(1..=3000),
+                        rand::rng().random_range(1..=12),
+                        rand::rng().random_range(1..=28),
                     )
                     .unwrap()
                 })
@@ -125,6 +126,7 @@ mod tests {
     roundtrip!(rt_point, test_rt_point, pg_sys::Point, pg_sys::Point { x: 1.0, y: 2.0 });
     roundtrip!(rt_string, test_rt_string, String, String::from("string"));
     roundtrip!(rt_oid, test_rt_oid, pg_sys::Oid, pg_sys::Oid::from(BuiltinOid::ANYOID));
+    roundtrip!(rt_xid, test_rt_xid, pg_sys::TransactionId, pg_sys::TransactionId::FIRST_NORMAL);
     roundtrip!(rt_i16, test_rt_i16, i16, i16::MAX);
     roundtrip!(rt_f64, test_rt_f64, f64, f64::MAX);
     roundtrip!(
@@ -350,8 +352,8 @@ mod tests {
         Vec<Option<AnyNumeric>>,
         vec![
             None,
-            Some(AnyNumeric::try_from(i128::MIN).unwrap()),
-            Some(AnyNumeric::try_from(u128::MAX).unwrap()),
+            Some(AnyNumeric::from(i128::MIN)),
+            Some(AnyNumeric::from(u128::MAX)),
             None,
             Some(AnyNumeric::from_str("31241234123412341234").unwrap()),
             None

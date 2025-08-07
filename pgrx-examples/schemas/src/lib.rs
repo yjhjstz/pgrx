@@ -13,7 +13,7 @@
 use pgrx::prelude::*;
 use serde::{Deserialize, Serialize};
 
-::pgrx::pg_module_magic!();
+pgrx::pg_module_magic!(name, version);
 
 #[derive(PostgresType, Serialize, Deserialize)]
 pub struct MyType(pub(crate) String);
@@ -101,7 +101,7 @@ mod tests {
 
     #[pg_test]
     fn test_my_some_schema_type() -> Result<(), spi::Error> {
-        Spi::connect(|mut c| {
+        Spi::connect_mut(|c| {
             // "MySomeSchemaType" is in 'some_schema', so it needs to be discoverable
             c.update("SET search_path TO some_schema,public", None, &[])?;
             assert_eq!(

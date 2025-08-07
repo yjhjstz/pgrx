@@ -262,7 +262,7 @@ impl PgrxSql {
             create_dir_all(parent)?;
         }
         let mut out = File::create(path)?;
-        write!(out, "{}", generated)?;
+        write!(out, "{generated}")?;
         Ok(())
     }
 
@@ -281,7 +281,7 @@ impl PgrxSql {
 
         #[cfg(not(feature = "syntax-highlighting"))]
         {
-            write!(*out, "{}", generated)?;
+            write!(*out, "{generated}")?;
         }
 
         Ok(())
@@ -382,7 +382,7 @@ impl PgrxSql {
             create_dir_all(parent)?;
         }
         let mut out = File::create(path)?;
-        write!(out, "{:?}", generated)?;
+        write!(out, "{generated:?}")?;
         Ok(())
     }
 
@@ -456,10 +456,14 @@ impl PgrxSql {
             let extname = &self.extension_name;
             let extver = &self.control.default_version;
             // Note: versioned so-name format must agree with cargo pgrx
-            format!("$libdir/{}-{}", extname, extver)
+            format!("{extname}-{extver}")
         } else {
             String::from("MODULE_PATHNAME")
         }
+    }
+
+    pub fn find_matching_fn(&self, name: &str) -> Option<&PgExternEntity> {
+        self.externs.keys().find(|key| key.full_path.ends_with(name))
     }
 }
 
@@ -832,6 +836,20 @@ fn connect_externs(
                         } else {
                             return Err(eyre!("Could not find `requires` target: {:?}", requires));
                         }
+                    }
+                }
+                crate::ExternArgs::Support(support_fn) => {
+                    if let Some(target) = find_positioning_ref_target(
+                        support_fn,
+                        types,
+                        enums,
+                        externs,
+                        schemas,
+                        extension_sqls,
+                        triggers,
+                    ) {
+                        graph.add_edge(*target, index, SqlGraphRequires::By);
+                        has_explicit_requires = true
                     }
                 }
                 crate::ExternArgs::Schema(declared_schema_name) => {
@@ -1388,7 +1406,7 @@ fn make_extern_connection(
             Ok(())
         }
         None => Err(eyre!("Did not find connection `{full_path}` in {:#?}", {
-            let mut paths = externs.iter().map(|(v, _)| v.full_path).collect::<Vec<_>>();
+            let mut paths = externs.keys().map(|v| v.full_path).collect::<Vec<_>>();
             paths.sort();
             paths
         })),

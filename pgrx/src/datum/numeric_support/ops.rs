@@ -200,13 +200,13 @@ macro_rules! anynumeric_assign_op_from_float {
             #[inline]
             fn $trait_fname(&mut self, rhs: $ty) {
                 // these versions of Postgres could produce an error when unwrapping a try_from(float)
-                #[cfg(any(feature = "pg12", feature = "pg13"))]
+                #[cfg(feature = "pg13")]
                 {
                     *self = self.clone() $op AnyNumeric::try_from(rhs).unwrap();
                 }
 
                 // these versions won't, so we use .unwrap_unchecked()
-                #[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17"))]
+                #[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18"))]
                 {
                     unsafe {
                         *self = self.clone() $op AnyNumeric::try_from(rhs).unwrap_unchecked();

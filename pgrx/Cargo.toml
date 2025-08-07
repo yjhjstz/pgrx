@@ -10,17 +10,17 @@
 
 [package]
 name = "pgrx"
-version = "0.12.7"
-authors = ["PgCentral Foundation, Inc. <contact@pgcentral.org>"]
-license = "MIT"
+version = "0.16.0"
+authors.workspace = true
+license.workspace = true
 description = "pgrx:  A Rust framework for creating Postgres extensions"
-homepage = "https://github.com/pgcentralfoundation/pgrx/"
-repository = "https://github.com/pgcentralfoundation/pgrx/"
+homepage.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/pgrx"
 categories = ["database"]
 keywords = ["database", "postgres", "postgresql", "extension"]
 readme = "../README.md"
-edition = "2021"
+edition.workspace = true
 include = ["src/**/*"]
 
 [lib]
@@ -29,12 +29,12 @@ crate-type = ["rlib"]
 [features]
 default = ["cshim"]
 cshim = ["pgrx-pg-sys/cshim"]
-pg12 = ["pgrx-pg-sys/pg12"]
 pg13 = ["pgrx-pg-sys/pg13"]
 pg14 = ["pgrx-pg-sys/pg14"]
 pg15 = ["pgrx-pg-sys/pg15"]
 pg16 = ["pgrx-pg-sys/pg16"]
 pg17 = ["pgrx-pg-sys/pg17"]
+pg18 = ["pgrx-pg-sys/pg18"]
 no-schema-generation = ["pgrx-macros/no-schema-generation", "pgrx-sql-entity-graph/no-schema-generation"]
 unsafe-postgres = []     # when trying to compile against something that looks like Postgres but claims to be different
 nightly = []    # For features and functionality which require nightly Rust - for example, std::mem::allocator.
@@ -54,15 +54,13 @@ pgrx-sql-entity-graph.workspace = true
 thiserror.workspace = true # error handling and logging
 
 # used to internally impl things
-once_cell = "1.18.0" # polyfill until std::lazy::OnceCell stabilizes
-uuid = { version = "1.4.1", features = ["v4"] } # PgLwLock and shmem
-enum-map = "2.6.3"
+once_cell = "1.21.3" # polyfill until std::lazy::OnceCell stabilizes
+uuid = { version = "1.16.0", features = ["v4"] } # PgLwLock and shmem
+enum-map = "2.7.3"
 
 # exposed in public API
-atomic-traits = "0.3.0" # PgAtomic and shmem init
-bitflags = "2.4.0" # BackgroundWorker
+bitflags = "2.9.0" # BackgroundWorker
 bitvec = "1.0" # processing array nullbitmaps
-heapless = "0.8" # shmem and PgLwLock
 libc.workspace = true # FFI type compat
 seahash = "4.1.0" # derive(PostgresHash)
 serde.workspace = true # impls on pub types

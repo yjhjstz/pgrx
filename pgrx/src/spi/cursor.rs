@@ -32,7 +32,7 @@ type CursorName = String;
 /// ```rust,no_run
 /// use pgrx::prelude::*;
 /// # fn foo() -> spi::Result<()> {
-/// Spi::connect(|mut client| {
+/// Spi::connect_mut(|client| {
 ///     let mut cursor = client.open_cursor("SELECT * FROM generate_series(1, 5)", &[]);
 ///     assert_eq!(Some(1), cursor.fetch(1)?.get_one::<i32>()?);
 ///     assert_eq!(Some(2), cursor.fetch(2)?.get_one::<i32>()?);
@@ -47,13 +47,13 @@ type CursorName = String;
 /// ```rust,no_run
 /// use pgrx::prelude::*;
 /// # fn foo() -> spi::Result<()> {
-/// let cursor_name = Spi::connect(|mut client| {
+/// let cursor_name = Spi::connect_mut(|client| {
 ///     let mut cursor = client.open_cursor("SELECT * FROM generate_series(1, 5)", &[]);
 ///     assert_eq!(Ok(Some(1)), cursor.fetch(1)?.get_one::<i32>());
 ///     Ok::<_, spi::Error>(cursor.detach_into_name()) // <-- cursor gets dropped here
 ///     // <--- first SpiTupleTable gets freed by Spi::connect at this point
 /// })?;
-/// Spi::connect(|mut client| {
+/// Spi::connect_mut(|client| {
 ///     let mut cursor = client.find_cursor(&cursor_name)?;
 ///     assert_eq!(Ok(Some(2)), cursor.fetch(1)?.get_one::<i32>());
 ///     drop(cursor); // <-- cursor gets dropped here
@@ -72,7 +72,7 @@ impl SpiCursor<'_> {
     /// Fetch up to `count` rows from the cursor, moving forward
     ///
     /// If `fetch` runs off the end of the available rows, an empty [`SpiTupleTable`] is returned.
-    pub fn fetch(&mut self, count: libc::c_long) -> SpiResult<SpiTupleTable> {
+    pub fn fetch(&mut self, count: libc::c_long) -> SpiResult<SpiTupleTable<'_>> {
         // SAFETY: no concurrent access
         unsafe {
             pg_sys::SPI_tuptable = std::ptr::null_mut();
