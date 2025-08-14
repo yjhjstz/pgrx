@@ -18964,6 +18964,8 @@ pub struct RelationData {
     pub rd_rules: *mut RuleLock,
     pub rd_rulescxt: MemoryContext,
     pub trigdesc: *mut TriggerDesc,
+    #[cfg(feature = "cbdb")]
+    pub rd_cdbpolicy: *mut ::core::ffi::c_void, // struct GpPolicy * in Cloudberry
     pub rd_rsdesc: *mut RowSecurityDesc,
     pub rd_fkeylist: *mut List,
     pub rd_fkeyvalid: bool,
@@ -19006,6 +19008,10 @@ pub struct RelationData {
     pub rd_indcollation: *mut Oid,
     pub rd_opcoptions: *mut *mut bytea,
     pub rd_amcache: *mut ::core::ffi::c_void,
+    #[cfg(feature = "cbdb")]
+    pub rd_appendonly: *mut ::core::ffi::c_void, // Form_pg_appendonly in Cloudberry
+    #[cfg(feature = "cbdb")]
+    pub rd_aotuple: *mut HeapTupleData, // AO tuple in Cloudberry
     pub rd_fdwroutine: *mut FdwRoutine,
     pub rd_toastoid: Oid,
     pub pgstat_info: *mut PgStat_TableStatus,
@@ -40180,7 +40186,7 @@ unsafe extern "C-unwind" {
         fraction: f64,
     ) -> ::core::ffi::c_int;
     pub fn set_cheapest(parent_rel: *mut RelOptInfo);
-    pub fn add_path(parent_rel: *mut RelOptInfo, new_path: *mut Path);
+    pub fn add_path(parent_rel: *mut RelOptInfo, new_path: *mut Path, root: *mut PlannerInfo);
     pub fn add_path_precheck(
         parent_rel: *mut RelOptInfo,
         startup_cost: Cost,

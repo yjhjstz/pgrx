@@ -235,7 +235,7 @@ macro_rules! pg_magic_func {
         #[unsafe(no_mangle)]
         #[allow(non_snake_case, unexpected_cfgs)]
         #[doc(hidden)]
-        pub extern "C" fn Pg_magic_func() -> &'static ::pgrx::pg_sys::Pg_magic_struct {
+        pub extern "C-unwind" fn Pg_magic_func() -> &'static ::pgrx::pg_sys::Pg_magic_struct {
             #[repr(transparent)]
             struct AssertSync<T>(T);
             unsafe impl<T> Sync for AssertSync<T> {}

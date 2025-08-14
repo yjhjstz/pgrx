@@ -38,7 +38,7 @@ pg18 = ["pgrx-pg-sys/pg18"]
 no-schema-generation = ["pgrx-macros/no-schema-generation", "pgrx-sql-entity-graph/no-schema-generation"]
 unsafe-postgres = []     # when trying to compile against something that looks like Postgres but claims to be different
 nightly = []    # For features and functionality which require nightly Rust - for example, std::mem::allocator.
-cbdb = []    # For features and functionality which require the Cloudberry.
+cbdb = ["pgrx-pg-sys/cbdb"]    # For features and functionality which require the Cloudberry.
 
 [package.metadata.docs.rs]
 features = ["pg14", "cshim"]
