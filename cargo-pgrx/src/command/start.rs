@@ -115,7 +115,8 @@ pub(crate) fn start_postgres(
         return Ok(());
     }
 
-    println!(
+    // Use eprintln! instead of println! so output appears in cargo test
+    eprintln!(
         "{} Postgres v{} on port {}",
         "    Starting".bold().green(),
         pg_config.major_version()?,

@@ -20,6 +20,7 @@ use crate::pg_sys::AsPgCStr;
 use core::ptr;
 use std::fmt::Debug;
 use std::ptr::NonNull;
+use std::ffi::CString;
 
 /// A shorter type name for a `*const std::os::raw::c_void`
 #[allow(non_camel_case_types)]
@@ -189,12 +190,15 @@ impl Drop for OwnedMemoryContext {
             #[cfg(not(feature = "cbdb"))]
             pg_sys::MemoryContextDelete(self.owned);
             #[cfg(feature = "cbdb")]
-            pg_sys::MemoryContextDeleteImpl(
-                self.owned,
-                PgMemoryContexts::CurrentMemoryContext.pstrdup(file!()),
-                std::ptr::null(), // field `func` is not used in Cloudberry
-                line!() as i32,
-            );
+            {
+                let filename = CString::new(file!()).unwrap();
+                pg_sys::MemoryContextDeleteImpl(
+                    self.owned,
+                    filename.as_ptr(),
+                    std::ptr::null(), // field `func` is not used in Cloudberry
+                    line!() as i32,
+                );
+            }
         }
     }
 }
@@ -405,12 +409,15 @@ impl PgMemoryContexts {
                     #[cfg(not(feature = "cbdb"))]
                     pg_sys::MemoryContextDelete(context);
                     #[cfg(feature = "cbdb")]
-                    pg_sys::MemoryContextDeleteImpl(
-                        context,
-                        PgMemoryContexts::CurrentMemoryContext.pstrdup(file!()),
-                        std::ptr::null(), // field `func` is not used in Cloudberry
-                        line!() as i32,
-                    );
+                    {
+                        let filename = CString::new(file!()).unwrap();
+                        pg_sys::MemoryContextDeleteImpl(
+                            context,
+                            filename.as_ptr(),
+                            std::ptr::null(), // field `func` is not used in Cloudberry
+                            line!() as i32,
+                        );
+                    }
                 }
 
                 result

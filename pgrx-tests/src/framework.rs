@@ -224,6 +224,7 @@ fn initialize_test_framework(
     shutdown::register_shutdown_hook();
     install_extension()?;
     initdb(postgresql_conf)?;
+    eprintln!("PostgreSQL test framework initialized");
 
     let system_session_id = start_pg(state.loglines.clone())?;
     let pg_config = get_pg_config()?;
@@ -488,11 +489,12 @@ fn initdb(postgresql_conf: Vec<&'static str>) -> eyre::Result<()> {
 fn modify_postgresql_conf(pgdata: PathBuf, postgresql_conf: Vec<&'static str>) -> eyre::Result<()> {
     let mut contents = String::new();
 
-    contents.push_str("log_line_prefix='[%m] [%p] [%c]: '\n");
+    //contents.push_str("log_line_prefix='[%m] [%p] [%c]: '\n");
     contents.push_str(&format!(
         "unix_socket_directories = '{}'\n",
         pgdata.parent().unwrap().display().to_string().replace("\\", "\\\\")
     ));
+    contents.push_str("gp_internal_is_singlenode=on\n");
     for setting in postgresql_conf {
         contents.push_str(&format!("{setting}\n"));
     }
@@ -578,6 +580,10 @@ fn start_pg(loglines: LogLines) -> eyre::Result<String> {
         "log_destination=stderr".into(),
         "-c".into(),
         "logging_collector=off".into(),
+        "-c".into(),
+        "gp_role=utility --gp_dbid=1 --gp_contentid=-1".into(),
+        "-c".into(),
+        "gp_internal_is_singlenode=on".into(),
     ];
 
     let mut command = if let Some(runas) = get_runas() {
@@ -625,6 +631,7 @@ fn start_pg(loglines: LogLines) -> eyre::Result<String> {
             .arg("-p")
             .arg(postmaster_path);
     }
+
     #[cfg(target_os = "windows")]
     {
         // on windows, created pipes are leaked, so that the command hangs
