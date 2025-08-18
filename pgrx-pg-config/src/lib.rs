@@ -389,6 +389,12 @@ impl PgConfig {
     }
 
     pub fn data_dir(&self) -> eyre::Result<PathBuf> {
+        #[cfg(feature = "cbdb")]
+        {
+            if let Ok(pgdata) = std::env::var("PGDATA") {
+                return Ok(PathBuf::from(pgdata));
+            }
+        }
         let mut path = Pgrx::home()?;
         path.push(format!("data-{}", self.major_version()?));
         Ok(path)
