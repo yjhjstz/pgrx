@@ -990,6 +990,10 @@ fn find_include(
 fn pg_target_includes(pg_version: u16, pg_config: &PgConfig) -> eyre::Result<Vec<String>> {
     let mut result =
         vec![find_include(pg_version, "PGRX_INCLUDEDIR_SERVER", || pg_config.includedir_server())?];
+    
+    // Add client include directory for libpq headers
+    result.push(find_include(pg_version, "PGRX_INCLUDEDIR", || pg_config.includedir())?);
+    
     if let Some("msvc") = env_tracked("CARGO_CFG_TARGET_ENV").as_deref() {
         result.push(find_include(pg_version, "PGRX_PKGINCLUDEDIR", || pg_config.pkgincludedir())?);
         result.push(find_include(pg_version, "PGRX_INCLUDEDIR_SERVER_PORT_WIN32", || {

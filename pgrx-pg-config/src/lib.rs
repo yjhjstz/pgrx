@@ -424,6 +424,10 @@ impl PgConfig {
         Ok(self.run("--pkgincludedir")?.into())
     }
 
+    pub fn includedir(&self) -> eyre::Result<PathBuf> {
+        Ok(self.run("--includedir")?.into())
+    }
+
     pub fn includedir_server(&self) -> eyre::Result<PathBuf> {
         Ok(self.run("--includedir-server")?.into())
     }
