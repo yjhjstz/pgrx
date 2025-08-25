@@ -374,6 +374,13 @@ fn generate_bindings(
         "cargo:rustc-link-search={}",
         lib_dir.to_str().ok_or(eyre!("{lib_dir:?} is not valid UTF-8 string"))?
     );
+    
+    // Link against libpq for client functions like PQresultStatus when cbdb feature is enabled
+    // This is needed when using libpq functions in extensions
+    if env_tracked("CARGO_FEATURE_CBDB").is_some() {
+        println!("cargo:rustc-link-lib=pq");
+    }
+    
     Ok(())
 }
 
