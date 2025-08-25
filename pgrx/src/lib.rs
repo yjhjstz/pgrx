@@ -41,6 +41,8 @@ pub mod atomics;
 pub mod bgworkers;
 pub mod callbacks;
 pub mod callconv;
+#[cfg(feature = "cbdb")]
+pub mod cdb;
 pub mod datum;
 pub mod enum_helper;
 pub mod fcinfo;
