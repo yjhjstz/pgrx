@@ -130,6 +130,10 @@ pub(crate) fn start_postgres(
         port.to_string(),
         "-c".into(), // and allow unix socket connections
         format!("unix_socket_directories={}", Pgrx::home()?.display()),
+        "-c".into(),
+        "gp_role=utility --gp_dbid=1 --gp_contentid=-1".into(),
+        "-c".into(),
+        "gp_internal_is_singlenode=on".into(),
     ];
 
     // user-provided settings to set/override what's in their existing `postgresql.conf`
